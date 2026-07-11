@@ -1,0 +1,4 @@
+# Build and test artifacts
+/agent-ssh
+*.test
+coverage.out
