@@ -16,7 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 var cpStdin io.Reader = os.Stdin
@@ -40,7 +40,7 @@ type copyEndpoint struct {
 func RunCopy(args []string) int {
 	spec, err := parseCopyArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: %v\n", err)
 		return 2
 	}
 
@@ -55,17 +55,17 @@ func RunCopy(args []string) int {
 		} else {
 			sourceFile, err = os.Open(spec.localPath)
 			if err != nil {
-				fmt.Fprintf(stderr, "agent-ssh: open local source %s: %v\n", spec.localPath, err)
+				fmt.Fprintf(stderr, "ssh-use: open local source %s: %v\n", spec.localPath, err)
 				return 1
 			}
 			defer sourceFile.Close()
 			info, statErr := sourceFile.Stat()
 			if statErr != nil {
-				fmt.Fprintf(stderr, "agent-ssh: stat local source %s: %v\n", spec.localPath, statErr)
+				fmt.Fprintf(stderr, "ssh-use: stat local source %s: %v\n", spec.localPath, statErr)
 				return 1
 			}
 			if !info.Mode().IsRegular() {
-				fmt.Fprintf(stderr, "agent-ssh: local source %s is not a regular file\n", spec.localPath)
+				fmt.Fprintf(stderr, "ssh-use: local source %s is not a regular file\n", spec.localPath)
 				return 1
 			}
 			source = sourceFile
@@ -77,12 +77,12 @@ func RunCopy(args []string) int {
 
 	ctx := context.Background()
 	if err := ensureDaemonFn(ctx); err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: %v\n", err)
 		return 1
 	}
 	conn, err := connectFn()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: connect daemon: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: connect daemon: %v\n", err)
 		return 1
 	}
 	defer conn.Close()
@@ -110,7 +110,7 @@ func RunCopy(args []string) int {
 	enc := protocol.NewEncoder(conn)
 	dec := protocol.NewDecoder(conn)
 	cwd, _ := getwdFn()
-	sourceName := getenvFn("AGENT_SSH_SOURCE")
+	sourceName := getenvFn("SSH_USE_SOURCE")
 	if sourceName == "" {
 		sourceName = "unknown"
 	}
@@ -128,7 +128,7 @@ func RunCopy(args []string) int {
 		PreserveMode: preserveMode,
 		Atomic:       spec.atomic,
 	}); err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: send transfer request: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: send transfer request: %v\n", err)
 		return 1
 	}
 
@@ -144,7 +144,7 @@ func RunCopy(args []string) int {
 			if interrupted.Load() {
 				return 130
 			}
-			fmt.Fprintf(stderr, "agent-ssh: daemon connection closed: %v\n", err)
+			fmt.Fprintf(stderr, "ssh-use: daemon connection closed: %v\n", err)
 			return 1
 		}
 		if msg.ID != "" {
@@ -156,13 +156,13 @@ func RunCopy(args []string) int {
 			commandID.Store(msg.ID)
 		case "command.queued":
 			if msg.Position > 0 {
-				fmt.Fprintf(stderr, "agent-ssh: queued on %s position=%d\n", spec.host, msg.Position)
+				fmt.Fprintf(stderr, "ssh-use: queued on %s position=%d\n", spec.host, msg.Position)
 			} else {
-				fmt.Fprintf(stderr, "agent-ssh: queued on %s\n", spec.host)
+				fmt.Fprintf(stderr, "ssh-use: queued on %s\n", spec.host)
 			}
 		case "approval.waiting":
-			fmt.Fprintln(stderr, "agent-ssh: waiting for user approval")
-			fmt.Fprintln(stderr, "open console: agent-ssh tui")
+			fmt.Fprintln(stderr, "ssh-use: waiting for user approval")
+			fmt.Fprintln(stderr, "open console: ssh-use tui")
 			risk := ""
 			if msg.PolicyDecision != nil {
 				risk = string(msg.PolicyDecision.Risk)
@@ -170,24 +170,24 @@ func RunCopy(args []string) int {
 			fmt.Fprintf(stderr, "id: %s\nhost: %s\nrisk: %s\ncopy: %s -> %s\n", msg.ID, spec.host, risk, spec.source, spec.destination)
 		case "approval.heartbeat":
 			if msg.TUIConnected {
-				fmt.Fprintf(stderr, "agent-ssh: waiting for approval in TUI id=%s elapsed=%s\n", msg.ID, msg.Elapsed)
+				fmt.Fprintf(stderr, "ssh-use: waiting for approval in TUI id=%s elapsed=%s\n", msg.ID, msg.Elapsed)
 			} else {
-				fmt.Fprintf(stderr, "agent-ssh: still waiting for approval id=%s elapsed=%s open_console=\"agent-ssh tui\"\n", msg.ID, msg.Elapsed)
+				fmt.Fprintf(stderr, "ssh-use: still waiting for approval id=%s elapsed=%s open_console=\"ssh-use tui\"\n", msg.ID, msg.Elapsed)
 			}
 		case "transfer.ready":
 			if spec.direction == "upload" {
 				if uploadSent {
-					fmt.Fprintln(stderr, "agent-ssh: duplicate transfer.ready")
+					fmt.Fprintln(stderr, "ssh-use: duplicate transfer.ready")
 					return 1
 				}
 				uploadSent = true
 				if err := streamUpload(enc, msg.ID, source); err != nil {
-					fmt.Fprintf(stderr, "agent-ssh: upload source: %v\n", err)
+					fmt.Fprintf(stderr, "ssh-use: upload source: %v\n", err)
 				}
 				continue
 			}
 			if sink != nil {
-				fmt.Fprintln(stderr, "agent-ssh: duplicate transfer.ready")
+				fmt.Fprintln(stderr, "ssh-use: duplicate transfer.ready")
 				return 1
 			}
 			sink, err = newDownloadSink(spec.localPath, spec.remotePath, spec.atomic, os.FileMode(msg.FileMode))
@@ -196,7 +196,7 @@ func RunCopy(args []string) int {
 			}
 		case "transfer.chunk":
 			if sink == nil {
-				fmt.Fprintln(stderr, "agent-ssh: received file data before transfer.ready")
+				fmt.Fprintln(stderr, "ssh-use: received file data before transfer.ready")
 				return 1
 			}
 			expectedID, _ := commandID.Load().(string)
@@ -217,7 +217,7 @@ func RunCopy(args []string) int {
 			sink.consume(data)
 		case "transfer.eof":
 			if sink == nil {
-				fmt.Fprintln(stderr, "agent-ssh: received transfer.eof before transfer.ready")
+				fmt.Fprintln(stderr, "ssh-use: received transfer.eof before transfer.ready")
 				return 1
 			}
 			expectedID, _ := commandID.Load().(string)
@@ -230,7 +230,7 @@ func RunCopy(args []string) int {
 				commit.Error = finishErr.Error()
 			}
 			if err := enc.Encode(commit); err != nil {
-				fmt.Fprintf(stderr, "agent-ssh: confirm download: %v\n", err)
+				fmt.Fprintf(stderr, "ssh-use: confirm download: %v\n", err)
 				return 1
 			}
 		case "final":
@@ -242,22 +242,22 @@ func RunCopy(args []string) int {
 				return 0
 			}
 			if msg.Error != "" {
-				fmt.Fprintf(stderr, "agent-ssh: %s\n", msg.Error)
+				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 				if spec.direction == "upload" && !spec.atomic {
-					fmt.Fprintln(stderr, "agent-ssh: remote destination may be incomplete")
+					fmt.Fprintln(stderr, "ssh-use: remote destination may be incomplete")
 				} else if spec.direction == "download" && localMayBeIncomplete {
-					fmt.Fprintln(stderr, "agent-ssh: local destination may be incomplete")
+					fmt.Fprintln(stderr, "ssh-use: local destination may be incomplete")
 				}
 			}
-			return exitCodeForAgentSSHError(msg.AgentSSHErrorCode)
+			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		case "error":
 			if sink != nil {
 				sink.abort()
 			}
 			if msg.Error != "" {
-				fmt.Fprintf(stderr, "agent-ssh: %s\n", msg.Error)
+				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
-			return exitCodeForAgentSSHError(msg.AgentSSHErrorCode)
+			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		}
 	}
 }
@@ -287,7 +287,7 @@ func parseCopyArgs(args []string) (copySpec, error) {
 		positional = append(positional, arg)
 	}
 	if len(positional) != 2 {
-		return copySpec{}, fmt.Errorf("usage: agent-ssh cp [--atomic] <source> <destination>")
+		return copySpec{}, fmt.Errorf("usage: ssh-use cp [--atomic] <source> <destination>")
 	}
 
 	source, err := parseCopyEndpoint(positional[0])
@@ -410,7 +410,7 @@ func newDownloadSink(localPath, remotePath string, atomicWrite bool, mode os.Fil
 	}
 
 	if atomicWrite {
-		file, err := os.CreateTemp(filepath.Dir(target), ".agent-ssh-*.tmp")
+		file, err := os.CreateTemp(filepath.Dir(target), ".ssh-use-*.tmp")
 		if err != nil {
 			return nil, fmt.Errorf("create temporary destination for %s: %w", target, err)
 		}

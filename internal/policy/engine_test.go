@@ -3,8 +3,8 @@ package policy
 import (
 	"testing"
 
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
 )
 
 func TestEvaluateSensitiveBuiltinRules(t *testing.T) {

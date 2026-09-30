@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"agent-ssh/internal/model"
+	"github.com/zhiylee/ssh-use/internal/model"
 )
 
 func TestStoreSaveRecentAndUpdate(t *testing.T) {
-	t.Setenv("AGENT_SSH_DATA_DIR", t.TempDir())
+	t.Setenv("SSH_USE_DATA_DIR", t.TempDir())
 	store, err := Open(true)
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +46,63 @@ func TestStoreSaveRecentAndUpdate(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesLegacyErrorColumn(t *testing.T) {
+	t.Setenv("SSH_USE_DATA_DIR", t.TempDir())
+	ctx := context.Background()
+	store, err := Open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	rec := model.CommandRecord{
+		ID:              "legacy",
+		CreatedAt:       time.Now(),
+		Host:            "prod1",
+		Command:         "uptime",
+		DisplayCommand:  "uptime",
+		Status:          model.StatusRejected,
+		SSHUseErrorCode: "approval_rejected",
+	}
+	if err := store.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `ALTER TABLE commands RENAME COLUMN ssh_use_error_code TO agent_ssh_error_code`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent, err := store.Recent(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 || recent[0].ID != rec.ID || recent[0].Command != rec.Command || recent[0].SSHUseErrorCode != rec.SSHUseErrorCode {
+		t.Fatalf("migrated records = %#v", recent)
+	}
+	rec.SSHUseErrorCode = "cancelled"
+	if err := store.Save(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent, err = store.Recent(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 1 || recent[0].SSHUseErrorCode != "cancelled" {
+		t.Fatalf("updated records = %#v", recent)
+	}
+}
+
 func TestDisabledStoreIsNoop(t *testing.T) {
 	store, err := Open(false)
 	if err != nil {
@@ -70,7 +127,7 @@ func TestLimitOutput(t *testing.T) {
 	}
 	long := strings.Repeat("a", 300)
 	out, truncated = LimitOutput(long, 150)
-	if !truncated || !strings.Contains(out, "agent-ssh truncated") || len(out) > 150 {
+	if !truncated || !strings.Contains(out, "ssh-use truncated") || len(out) > 150 {
 		t.Fatalf("unexpected truncate result len=%d truncated=%v out=%q", len(out), truncated, out)
 	}
 	small, truncated := LimitOutput("abcdef", 3)
@@ -80,7 +137,7 @@ func TestLimitOutput(t *testing.T) {
 }
 
 func TestDeleteOlderThan(t *testing.T) {
-	t.Setenv("AGENT_SSH_DATA_DIR", t.TempDir())
+	t.Setenv("SSH_USE_DATA_DIR", t.TempDir())
 	store, err := Open(true)
 	if err != nil {
 		t.Fatal(err)

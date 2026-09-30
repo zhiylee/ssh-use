@@ -6,9 +6,9 @@ import (
 	"io"
 	"os"
 
-	"agent-ssh/internal/cli"
-	"agent-ssh/internal/daemon"
-	uiterm "agent-ssh/internal/tui"
+	"github.com/zhiylee/ssh-use/internal/cli"
+	"github.com/zhiylee/ssh-use/internal/daemon"
+	uiterm "github.com/zhiylee/ssh-use/internal/tui"
 )
 
 var (
@@ -37,7 +37,7 @@ func run(args []string, stderr io.Writer) int {
 		return runTUIFn(args[1:])
 	case "daemon":
 		if err := runDaemonFn(context.Background()); err != nil {
-			fmt.Fprintf(stderr, "agent-ssh daemon: %v\n", err)
+			fmt.Fprintf(stderr, "ssh-use daemon: %v\n", err)
 			return 1
 		}
 		return 0
@@ -49,7 +49,7 @@ func run(args []string, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage:")
-	fmt.Fprintln(w, "  agent-ssh exec <host> -- <command>")
-	fmt.Fprintln(w, "  agent-ssh cp [--atomic] <source> <destination>")
-	fmt.Fprintln(w, "  agent-ssh tui [--safe]")
+	fmt.Fprintln(w, "  ssh-use exec <host> -- <command>")
+	fmt.Fprintln(w, "  ssh-use cp [--atomic] <source> <destination>")
+	fmt.Fprintln(w, "  ssh-use tui [--safe]")
 }

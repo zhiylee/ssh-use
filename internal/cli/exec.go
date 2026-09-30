@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"agent-ssh/internal/client"
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/client"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 var (
@@ -30,17 +30,17 @@ var (
 func RunExec(args []string) int {
 	host, command, err := parseExecArgs(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: %v\n", err)
 		return 2
 	}
 	ctx := context.Background()
 	if err := ensureDaemonFn(ctx); err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: %v\n", err)
 		return 1
 	}
 	conn, err := connectFn()
 	if err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: connect daemon: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: connect daemon: %v\n", err)
 		return 1
 	}
 	defer conn.Close()
@@ -61,7 +61,7 @@ func RunExec(args []string) int {
 	enc := protocol.NewEncoder(conn)
 	dec := protocol.NewDecoder(conn)
 	cwd, _ := getwdFn()
-	source := getenvFn("AGENT_SSH_SOURCE")
+	source := getenvFn("SSH_USE_SOURCE")
 	if source == "" {
 		source = "unknown"
 	}
@@ -73,14 +73,14 @@ func RunExec(args []string) int {
 		CWD:       cwd,
 		ClientPID: getpidFn(),
 	}); err != nil {
-		fmt.Fprintf(stderr, "agent-ssh: send request: %v\n", err)
+		fmt.Fprintf(stderr, "ssh-use: send request: %v\n", err)
 		return 1
 	}
 
 	for {
 		var msg protocol.Message
 		if err := dec.Decode(&msg); err != nil {
-			fmt.Fprintf(stderr, "agent-ssh: daemon connection closed: %v\n", err)
+			fmt.Fprintf(stderr, "ssh-use: daemon connection closed: %v\n", err)
 			return 1
 		}
 		if msg.ID != "" {
@@ -90,14 +90,14 @@ func RunExec(args []string) int {
 		case "stdout_chunk":
 			data, err := protocol.DecodeData(msg)
 			if err != nil {
-				fmt.Fprintf(stderr, "agent-ssh: decode stdout chunk: %v\n", err)
+				fmt.Fprintf(stderr, "ssh-use: decode stdout chunk: %v\n", err)
 				return 1
 			}
 			_, _ = stdout.Write(data)
 		case "stderr_chunk":
 			data, err := protocol.DecodeData(msg)
 			if err != nil {
-				fmt.Fprintf(stderr, "agent-ssh: decode stderr chunk: %v\n", err)
+				fmt.Fprintf(stderr, "ssh-use: decode stderr chunk: %v\n", err)
 				return 1
 			}
 			_, _ = stderr.Write(data)
@@ -105,13 +105,13 @@ func RunExec(args []string) int {
 			commandID.Store(msg.ID)
 		case "command.queued":
 			if msg.Position > 0 {
-				fmt.Fprintf(stderr, "agent-ssh: queued on %s position=%d\n", host, msg.Position)
+				fmt.Fprintf(stderr, "ssh-use: queued on %s position=%d\n", host, msg.Position)
 			} else {
-				fmt.Fprintf(stderr, "agent-ssh: queued on %s\n", host)
+				fmt.Fprintf(stderr, "ssh-use: queued on %s\n", host)
 			}
 		case "approval.waiting":
-			fmt.Fprintln(stderr, "agent-ssh: waiting for user approval")
-			fmt.Fprintln(stderr, "open console: agent-ssh tui")
+			fmt.Fprintln(stderr, "ssh-use: waiting for user approval")
+			fmt.Fprintln(stderr, "open console: ssh-use tui")
 			risk := ""
 			if msg.PolicyDecision != nil {
 				risk = string(msg.PolicyDecision.Risk)
@@ -119,9 +119,9 @@ func RunExec(args []string) int {
 			fmt.Fprintf(stderr, "id: %s\nhost: %s\nrisk: %s\ncommand: %s\n", msg.ID, host, risk, command)
 		case "approval.heartbeat":
 			if msg.TUIConnected {
-				fmt.Fprintf(stderr, "agent-ssh: waiting for approval in TUI id=%s elapsed=%s\n", msg.ID, msg.Elapsed)
+				fmt.Fprintf(stderr, "ssh-use: waiting for approval in TUI id=%s elapsed=%s\n", msg.ID, msg.Elapsed)
 			} else {
-				fmt.Fprintf(stderr, "agent-ssh: still waiting for approval id=%s elapsed=%s open_console=\"agent-ssh tui\"\n", msg.ID, msg.Elapsed)
+				fmt.Fprintf(stderr, "ssh-use: still waiting for approval id=%s elapsed=%s open_console=\"ssh-use tui\"\n", msg.ID, msg.Elapsed)
 			}
 		case "final":
 			if msg.OK {
@@ -131,21 +131,21 @@ func RunExec(args []string) int {
 				return 0
 			}
 			if msg.Error != "" {
-				fmt.Fprintf(stderr, "agent-ssh: %s\n", msg.Error)
+				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
-			return exitCodeForAgentSSHError(msg.AgentSSHErrorCode)
+			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		case "error":
 			if msg.Error != "" {
-				fmt.Fprintf(stderr, "agent-ssh: %s\n", msg.Error)
+				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
-			return exitCodeForAgentSSHError(msg.AgentSSHErrorCode)
+			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		}
 	}
 }
 
 func parseExecArgs(args []string) (string, string, error) {
 	if len(args) < 3 {
-		return "", "", fmt.Errorf("usage: agent-ssh exec <host> -- <command>")
+		return "", "", fmt.Errorf("usage: ssh-use exec <host> -- <command>")
 	}
 	host := args[0]
 	separator := -1
@@ -156,7 +156,7 @@ func parseExecArgs(args []string) (string, string, error) {
 		}
 	}
 	if separator == -1 || separator == len(args)-1 {
-		return "", "", fmt.Errorf("usage: agent-ssh exec <host> -- <command>")
+		return "", "", fmt.Errorf("usage: ssh-use exec <host> -- <command>")
 	}
 	cmdArgs := args[separator+1:]
 	if len(cmdArgs) == 1 {
@@ -186,7 +186,7 @@ func shellQuote(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 }
 
-func exitCodeForAgentSSHError(code string) int {
+func exitCodeForSSHUseError(code string) int {
 	switch code {
 	case "approval_rejected", "policy_blocked":
 		return 126

@@ -1,8 +1,8 @@
-# agent-ssh 需求代办列表
+# ssh-use 需求代办列表
 
-更新时间：2026-07-11
+更新时间：2026-09-30
 
-本文档将竞品调研结论转化为可执行需求。现有产品定义和架构约束以 [agent-ssh-design.md](./agent-ssh-design.md) 为准。
+本文档将竞品调研结论转化为可执行需求。现有产品定义和架构约束以 [ssh-use-design.md](./ssh-use-design.md) 为准。
 
 ## 状态约定
 
@@ -15,8 +15,8 @@
 
 ## 当前基线
 
-- [x] 产品、CLI、Go module、配置路径和运行时标识统一为 `agent-ssh`。
-- [x] 提供 `agent-ssh exec`、`agent-ssh cp`、`agent-ssh tui` 和 `agent-ssh tui --safe`。
+- [x] 产品、CLI、配置路径和运行时标识统一为 `ssh-use`，Go module 为 `github.com/zhiylee/ssh-use`。
+- [x] 提供 `ssh-use exec`、`ssh-use cp`、`ssh-use tui` 和 `ssh-use tui --safe`。
 - [x] daemon 自动启动并通过 Unix socket 提供 JSON lines 协议。
 - [x] SSH client 连接池、断线重连和空闲连接回收。
 - [x] stdout/stderr 流式返回并保留远端 exit code。
@@ -35,7 +35,7 @@
 
 - 提供 Claude Code 和 OpenCode 可安装的 Skill。
 - 明确触发条件：仅在用户要求操作远程主机时使用。
-- 所有远程执行和文件传输必须通过 `agent-ssh`，不得回退到裸 `ssh`、`scp` 或绕过 daemon。
+- 所有远程执行和文件传输必须通过 `ssh-use`，不得回退到裸 `ssh`、`scp` 或绕过 daemon。
 - Skill 必须先解析目标别名；存在歧义时停止并列出候选目标。
 - Skill 不读取、输出或持久化私钥、密码、OTP 和完整敏感配置。
 - Skill 中说明审批等待、超时、取消和非零退出码的处理方式。
@@ -45,7 +45,7 @@
 - 在 Claude Code 和 OpenCode 中各完成一次安装验证。
 - 能完成只读命令、需审批命令、上传和下载四类端到端场景。
 - 敏感命令仍进入现有策略和 TUI 审批流程。
-- Agent 收到可区分的远端失败与 `agent-ssh` 自身错误。
+- Agent 收到可区分的远端失败与 `ssh-use` 自身错误。
 
 参考：`Eriemon/remote-ssh`、`veithly/vibeshell`。
 
@@ -297,7 +297,7 @@
 
 在以下方案中选择一个：
 
-1. 新增 `agent-ssh hosts` 和 `agent-ssh doctor`。
+1. 新增 `ssh-use hosts` 和 `ssh-use doctor`。
 2. 保持三个主要命令，通过内部只读子命令供 Skill 使用。
 3. 扩展本地协议，由 Skill helper 直接读取只读信息。
 

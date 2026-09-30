@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"agent-ssh/internal/paths"
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/paths"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 var (

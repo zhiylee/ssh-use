@@ -1,4 +1,4 @@
 # Build and test artifacts
-/agent-ssh
+/ssh-use
 *.test
 coverage.out

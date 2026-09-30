@@ -23,10 +23,10 @@ func TestChunkBase64RoundTrip(t *testing.T) {
 func TestJSONLinesRoundTrip(t *testing.T) {
 	var buf bytes.Buffer
 	enc := NewEncoder(&buf)
-	if err := enc.Encode(Message{Type: "final", AgentSSHErrorCode: "policy_blocked"}); err != nil {
+	if err := enc.Encode(Message{Type: "final", SSHUseErrorCode: "policy_blocked"}); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(buf.Bytes(), []byte(`"agent_ssh_error_code":"policy_blocked"`)) {
+	if !bytes.Contains(buf.Bytes(), []byte(`"ssh_use_error_code":"policy_blocked"`)) {
 		t.Fatalf("encoded message = %s", buf.Bytes())
 	}
 	dec := NewDecoder(&buf)
@@ -34,7 +34,7 @@ func TestJSONLinesRoundTrip(t *testing.T) {
 	if err := dec.Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Type != "final" || got.AgentSSHErrorCode != "policy_blocked" {
+	if got.Type != "final" || got.SSHUseErrorCode != "policy_blocked" {
 		t.Fatalf("got %#v", got)
 	}
 }

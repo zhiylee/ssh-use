@@ -13,7 +13,7 @@ func TestRunUsage(t *testing.T) {
 	if code := run(nil, &stderr); code != 2 {
 		t.Fatalf("code=%d", code)
 	}
-	if !strings.Contains(stderr.String(), "agent-ssh exec") {
+	if !strings.Contains(stderr.String(), "ssh-use exec") {
 		t.Fatalf("usage missing: %q", stderr.String())
 	}
 }

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 func TestConnectUsesDialer(t *testing.T) {

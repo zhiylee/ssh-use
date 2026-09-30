@@ -12,7 +12,7 @@ import (
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := Default()
-	if cfg.Defaults.Key != "~/.ssh/id_ed25519_agent_ssh" {
+	if cfg.Defaults.Key != "~/.ssh/id_ed25519_ssh_use" {
 		t.Fatalf("default key = %q", cfg.Defaults.Key)
 	}
 	if cfg.Policy.Mode != ModeSensitive {
@@ -43,7 +43,7 @@ func TestParsedBooleanSettingsAreIndependent(t *testing.T) {
 }
 
 func TestLoadMissingUsesDefaults(t *testing.T) {
-	t.Setenv("AGENT_SSH_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
+	t.Setenv("SSH_USE_CONFIG_PATH", filepath.Join(t.TempDir(), "missing.yaml"))
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestLoadAppliesDefaultsAndResolveHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	data := []byte(`
 defaults:
   user: ubuntu
@@ -111,7 +111,7 @@ approval:
 
 func TestSaveAndReload(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	cfg := Default()
 	cfg.Policy.Mode = ModeAuto
 	cfg.Hosts["h"] = Host{Addr: "127.0.0.1", User: "me"}
@@ -136,7 +136,7 @@ func TestSaveAndReload(t *testing.T) {
 
 func TestSaveIfUnchangedDoesNotOverwriteConcurrentEdit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	cfg := Default()
 	if err := Save(cfg); err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestSavePreservesConfigSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("AGENT_SSH_CONFIG_PATH", link)
+	t.Setenv("SSH_USE_CONFIG_PATH", link)
 	cfg := Default()
 	cfg.Policy.Mode = ModeAuto
 	if err := Save(cfg); err != nil {
@@ -281,7 +281,7 @@ func TestParseRejectsUnknownFieldsAndMultipleDocuments(t *testing.T) {
 
 func TestExplicitEmptyApprovalConfirmRisks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	if err := os.WriteFile(path, []byte("approval:\n  confirm_risks: []\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestExplicitEmptyApprovalConfirmRisks(t *testing.T) {
 
 func TestInvalidApprovalConfirmRisk(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	if err := os.WriteFile(path, []byte("approval:\n  confirm_risks: [urgent]\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestInvalidApprovalConfirmRisk(t *testing.T) {
 
 func TestDurationInvalid(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
-	t.Setenv("AGENT_SSH_CONFIG_PATH", path)
+	t.Setenv("SSH_USE_CONFIG_PATH", path)
 	if err := os.WriteFile(path, []byte("defaults:\n  command_timeout: nope\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}

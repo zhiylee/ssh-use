@@ -8,11 +8,11 @@ import (
 )
 
 func RuntimeDir() string {
-	if dir := os.Getenv("AGENT_SSH_RUNTIME_DIR"); dir != "" {
+	if dir := os.Getenv("SSH_USE_RUNTIME_DIR"); dir != "" {
 		return dir
 	}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
-		return filepath.Join(dir, "agent-ssh")
+		return filepath.Join(dir, "ssh-use")
 	}
 	uid := os.Getuid()
 	userRuntime := filepath.Join("/run/user", strconv.Itoa(uid))
@@ -22,13 +22,13 @@ func RuntimeDir() string {
 
 func fallbackRuntimeDir(uid int, tempDir string, hasUserRuntime bool) string {
 	if hasUserRuntime {
-		return filepath.Join("/run/user", strconv.Itoa(uid), "agent-ssh")
+		return filepath.Join("/run/user", strconv.Itoa(uid), "ssh-use")
 	}
-	return filepath.Join(tempDir, fmt.Sprintf("agent-ssh-%d", uid))
+	return filepath.Join(tempDir, fmt.Sprintf("ssh-use-%d", uid))
 }
 
 func SocketPath() string {
-	return filepath.Join(RuntimeDir(), "agent-ssh.sock")
+	return filepath.Join(RuntimeDir(), "ssh-use.sock")
 }
 
 func LogPath() string {
@@ -36,35 +36,35 @@ func LogPath() string {
 }
 
 func ConfigPath() string {
-	if path := os.Getenv("AGENT_SSH_CONFIG_PATH"); path != "" {
+	if path := os.Getenv("SSH_USE_CONFIG_PATH"); path != "" {
 		return path
 	}
 	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "agent-ssh", "config.yaml")
+		return filepath.Join(dir, "ssh-use", "config.yaml")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".config", "agent-ssh", "config.yaml")
+		return filepath.Join(".config", "ssh-use", "config.yaml")
 	}
-	return filepath.Join(home, ".config", "agent-ssh", "config.yaml")
+	return filepath.Join(home, ".config", "ssh-use", "config.yaml")
 }
 
 func DataDir() string {
-	if dir := os.Getenv("AGENT_SSH_DATA_DIR"); dir != "" {
+	if dir := os.Getenv("SSH_USE_DATA_DIR"); dir != "" {
 		return dir
 	}
 	if dir := os.Getenv("XDG_DATA_HOME"); dir != "" {
-		return filepath.Join(dir, "agent-ssh")
+		return filepath.Join(dir, "ssh-use")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Join(".local", "share", "agent-ssh")
+		return filepath.Join(".local", "share", "ssh-use")
 	}
-	return filepath.Join(home, ".local", "share", "agent-ssh")
+	return filepath.Join(home, ".local", "share", "ssh-use")
 }
 
 func DBPath() string {
-	return filepath.Join(DataDir(), "agent-ssh.db")
+	return filepath.Join(DataDir(), "ssh-use.db")
 }
 
 func ExpandHome(path string) string {

@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"agent-ssh/internal/paths"
+	"github.com/zhiylee/ssh-use/internal/paths"
 )
 
 var ErrConfigChanged = errors.New("configuration file changed")
@@ -258,7 +258,7 @@ func Default() *Config {
 		Defaults: DefaultsConfig{
 			User:           "root",
 			Port:           22,
-			Key:            "~/.ssh/id_ed25519_agent_ssh",
+			Key:            "~/.ssh/id_ed25519_ssh_use",
 			IdleTimeout:    Duration{Duration: 10 * time.Minute},
 			ConnectTimeout: Duration{Duration: 10 * time.Second},
 			CommandTimeout: Duration{Duration: 5 * time.Minute},

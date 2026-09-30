@@ -9,8 +9,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/paths"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/paths"
 )
 
 type Store struct {
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS commands (
   default_action INTEGER,
   status TEXT NOT NULL,
   remote_exit_code INTEGER,
-  agent_ssh_error_code TEXT,
+  ssh_use_error_code TEXT,
   duration_ms INTEGER,
   stdout TEXT,
   stderr TEXT,
@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS commands (
 CREATE INDEX IF NOT EXISTS commands_created_at_idx ON commands(created_at DESC);
 CREATE INDEX IF NOT EXISTS commands_status_idx ON commands(status);
 `)
+	if err != nil {
+		return err
+	}
+
+	// Preserve audit history when opening a database from before the rename.
+	var legacyColumns int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('commands') WHERE name = 'agent_ssh_error_code'`).Scan(&legacyColumns); err != nil {
+		return err
+	}
+	if legacyColumns > 0 {
+		_, err = s.db.ExecContext(ctx, `ALTER TABLE commands RENAME COLUMN agent_ssh_error_code TO ssh_use_error_code`)
+	}
 	return err
 }
 
@@ -92,7 +104,7 @@ INSERT INTO commands (
   id, created_at, started_at, finished_at, source, client_pid, client_cwd,
   host, remote_user, command, display_command, mode, risk, policy_action,
   policy_rule, matched_pattern, policy_reason, default_action, status,
-  remote_exit_code, agent_ssh_error_code, duration_ms, stdout, stderr,
+  remote_exit_code, ssh_use_error_code, duration_ms, stdout, stderr,
   stdout_truncated, stderr_truncated, error, approval_status, approved_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
@@ -114,7 +126,7 @@ ON CONFLICT(id) DO UPDATE SET
   default_action=excluded.default_action,
   status=excluded.status,
   remote_exit_code=excluded.remote_exit_code,
-  agent_ssh_error_code=excluded.agent_ssh_error_code,
+  ssh_use_error_code=excluded.ssh_use_error_code,
   duration_ms=excluded.duration_ms,
   stdout=excluded.stdout,
   stderr=excluded.stderr,
@@ -144,7 +156,7 @@ ON CONFLICT(id) DO UPDATE SET
 		boolInt(rec.DefaultAction),
 		string(rec.Status),
 		nullInt(rec.RemoteExitCode),
-		rec.AgentSSHErrorCode,
+		rec.SSHUseErrorCode,
 		rec.DurationMS,
 		rec.Stdout,
 		rec.Stderr,
@@ -168,7 +180,7 @@ func (s *Store) Recent(ctx context.Context, limit int) ([]model.CommandRecord, e
 SELECT id, created_at, started_at, finished_at, source, client_pid, client_cwd,
   host, remote_user, command, display_command, mode, risk, policy_action,
   policy_rule, matched_pattern, policy_reason, default_action, status,
-  remote_exit_code, agent_ssh_error_code, duration_ms, stdout, stderr,
+  remote_exit_code, ssh_use_error_code, duration_ms, stdout, stderr,
   stdout_truncated, stderr_truncated, error, approval_status, approved_at
 FROM commands
 ORDER BY created_at DESC
@@ -189,7 +201,7 @@ LIMIT ?`, limit)
 			&rec.ID, &created, &started, &finished, &rec.Source, &rec.ClientPID, &rec.ClientCWD,
 			&rec.Host, &rec.RemoteUser, &rec.Command, &rec.DisplayCommand, &rec.Mode, &risk, &action,
 			&rec.PolicyRule, &rec.MatchedPattern, &rec.PolicyReason, &defaultAction, &status,
-			&remoteExit, &rec.AgentSSHErrorCode, &rec.DurationMS, &rec.Stdout, &rec.Stderr,
+			&remoteExit, &rec.SSHUseErrorCode, &rec.DurationMS, &rec.Stdout, &rec.Stderr,
 			&stdoutTruncated, &stderrTruncated, &rec.Error, &rec.ApprovalStatus, &approved,
 		); err != nil {
 			return nil, err
@@ -263,7 +275,7 @@ func LimitOutput(output string, max int) (string, bool) {
 	if max < 128 {
 		return output[:max], true
 	}
-	marker := fmt.Sprintf("\n...[agent-ssh truncated %d bytes]...\n", len(output)-max)
+	marker := fmt.Sprintf("\n...[ssh-use truncated %d bytes]...\n", len(output)-max)
 	if len(marker) >= max {
 		return output[:max], true
 	}

@@ -1,8 +1,27 @@
-# agent-ssh 设计方案
+# ssh-use 设计方案
 
-`agent-ssh` 是一个面向 AI agent 的远程命令执行工具。
+`ssh-use` 是一个面向 AI agent 的远程命令执行工具。
+
+GitHub 仓库：<https://github.com/zhiylee/ssh-use>。
+
+安装 CLI：
+
+```bash
+go install github.com/zhiylee/ssh-use/cmd/ssh-use@latest
+```
 
 目标是让 Claude Code、OpenCode 等 agent 不再频繁执行 `ssh root@host "command"`，而是通过本地常驻 daemon 复用 SSH 连接，并提供终端交互式 TUI 让用户实时审查、审批、拒绝和查看历史命令。
+
+## 从 agent-ssh 迁移
+
+项目、CLI 和未来的 Skill 统一使用 `ssh-use`。升级前停止旧 daemon，再迁移已有配置和审计库：
+
+- 配置文件：`~/.config/agent-ssh/config.yaml` -> `~/.config/ssh-use/config.yaml`。
+- 审计数据库：`~/.local/share/agent-ssh/agent-ssh.db` -> `~/.local/share/ssh-use/ssh-use.db`。首次打开会自动迁移旧错误码列，保留历史记录。
+- 环境变量前缀：`AGENT_SSH_` -> `SSH_USE_`，适用于 `SOURCE`、`CONFIG_PATH`、`DATA_DIR` 和 `RUNTIME_DIR`。
+- 本地协议与审计记录中的错误码字段：`agent_ssh_error_code` -> `ssh_use_error_code`。
+
+设置了 XDG 路径时，使用相应目录。迁移审计库时应保留整个数据目录；若存在同名的 `-wal`、`-shm` 或 `-journal` 配套文件，需一起迁移并使用新的数据库文件名前缀。原 SSH 私钥无需重建，在迁移后的配置中继续使用原路径即可；新配置的默认路径为 `~/.ssh/id_ed25519_ssh_use`。
 
 ## 核心目标
 
@@ -23,7 +42,7 @@
 - 不做远程 HTTP API。
 - 不做交互式 SSH shell。
 - 不复用同一个远端 shell。
-- 不提供 `agent-ssh approve`、`agent-ssh reject`、`agent-ssh pending` 这类命令行审批入口。
+- 不提供 `ssh-use approve`、`ssh-use reject`、`ssh-use pending` 这类命令行审批入口。
 - 不把 `ssh-agent` 作为必需组件。
 - 不做复杂 RBAC、多用户系统、云端审计。
 - 不做文件管理器、PTY、远程终端模拟器。
@@ -33,20 +52,20 @@
 AI agent 使用：
 
 ```bash
-agent-ssh exec <host> -- <command>
-agent-ssh cp [--atomic] <source> <destination>
+ssh-use exec <host> -- <command>
+ssh-use cp [--atomic] <source> <destination>
 ```
 
 用户只使用：
 
 ```bash
-agent-ssh tui
+ssh-use tui
 ```
 
 当普通 TUI 布局在小终端或异常终端中不可用时，用户可以使用安全交互模式：
 
 ```bash
-agent-ssh tui --safe
+ssh-use tui --safe
 ```
 
 `--safe` 仍然是 TUI，不提供命令行审批入口，只使用单栏、少颜色、少布局的保守界面。
@@ -54,27 +73,27 @@ agent-ssh tui --safe
 示例：
 
 ```bash
-agent-ssh exec prod1 -- "uptime"
-agent-ssh exec prod1 -- "docker ps"
-agent-ssh exec prod1 -- docker ps
-agent-ssh exec prod1 -- "systemctl restart nginx"
-agent-ssh tui
+ssh-use exec prod1 -- "uptime"
+ssh-use exec prod1 -- "docker ps"
+ssh-use exec prod1 -- docker ps
+ssh-use exec prod1 -- "systemctl restart nginx"
+ssh-use tui
 ```
 
-用户审批、拒绝、查看历史、切换模式、查看连接状态都在 `agent-ssh tui` 中完成。
+用户审批、拒绝、查看历史、切换模式、查看连接状态都在 `ssh-use tui` 中完成。
 
 ## 整体架构
 
 ```text
 Claude Code / OpenCode
         |
-        | agent-ssh exec prod1 -- "systemctl restart nginx"
+        | ssh-use exec prod1 -- "systemctl restart nginx"
         v
-agent-ssh CLI
+ssh-use CLI
         |
         | Unix socket + JSON lines
         v
-agent-ssh daemon
+ssh-use daemon
         |
         | policy engine
         | approval manager
@@ -86,13 +105,13 @@ remote servers
 
 User
         |
-        | agent-ssh tui
+        | ssh-use tui
         v
 interactive terminal dashboard
         |
         | Unix socket + event stream
         v
-agent-ssh daemon
+ssh-use daemon
 ```
 
 ## 关键设计决策
@@ -104,17 +123,17 @@ agent-ssh daemon
 因此需要本地 daemon 维护 SSH 连接池：
 
 ```text
-agent-ssh exec:
+ssh-use exec:
 短生命周期客户端，负责把命令发给 daemon，并等待结果。
 
-agent-ssh daemon:
+ssh-use daemon:
 常驻进程，负责 SSH 连接池、策略判断、审批等待、审计存储。
 
-agent-ssh tui:
+ssh-use tui:
 终端交互控制台，负责用户审查和审批。
 ```
 
-`agent-ssh exec` 和 `agent-ssh tui` 都会自动启动 daemon。
+`ssh-use exec` 和 `ssh-use tui` 都会自动启动 daemon。
 
 ### 不依赖 ssh-agent
 
@@ -125,12 +144,12 @@ hosts:
   prod1:
     addr: 10.0.0.11
     user: root
-    key: ~/.ssh/id_ed25519_agent_ssh
+    key: ~/.ssh/id_ed25519_ssh_use
 ```
 
 `ssh-agent` 只作为未来可选增强，不是核心路径。
 
-推荐用户为 `agent-ssh` 创建专用 SSH key，便于权限隔离和审计。
+推荐用户为 `ssh-use` 创建专用 SSH key，便于权限隔离和审计。
 
 ### 复用 ssh.Client，每条命令新建 ssh.Session
 
@@ -170,7 +189,7 @@ TCP connection
 ## 执行流程
 
 ```text
-1. AI agent 执行 agent-ssh exec prod1 -- "cmd"
+1. AI agent 执行 ssh-use exec prod1 -- "cmd"
 2. CLI 连接本地 daemon
 3. daemon 创建 command record
 4. policy engine 判断 allow / approve / block
@@ -179,7 +198,7 @@ TCP connection
 7. block: 直接拒绝
 8. 执行时复用 ssh.Client
 9. 每条命令创建新的 ssh.Session
-10. stdout/stderr/remote_exit_code/agent_ssh_error_code 写入审计数据库
+10. stdout/stderr/remote_exit_code/ssh_use_error_code 写入审计数据库
 11. CLI 把结果返回给 AI agent
 12. TUI 实时更新命令状态
 ```
@@ -204,7 +223,7 @@ CANCEL_FAILED
 
 `FAILED` 表示远端命令已执行但返回非零或执行出错。
 
-`agent_ssh_error_code` 表示 agent-ssh 自身错误，例如审批拒绝、审批超时、连接失败、策略阻断、取消。
+`ssh_use_error_code` 表示 ssh-use 自身错误，例如审批拒绝、审批超时、连接失败、策略阻断、取消。
 
 `remote_exit_code` 表示远端命令 exit code。未执行远端命令时为空。
 
@@ -213,16 +232,16 @@ CANCEL_FAILED
 只暴露三个主要命令：
 
 ```bash
-agent-ssh exec <host> -- <command>
-agent-ssh cp [--atomic] <source> <destination>
-agent-ssh tui
+ssh-use exec <host> -- <command>
+ssh-use cp [--atomic] <source> <destination>
+ssh-use tui
 ```
 
 `exec` 支持两种命令传递方式：
 
 ```bash
-agent-ssh exec prod1 -- "docker ps"
-agent-ssh exec prod1 -- docker ps
+ssh-use exec prod1 -- "docker ps"
+ssh-use exec prod1 -- docker ps
 ```
 
 解析规则：
@@ -237,9 +256,9 @@ agent-ssh exec prod1 -- docker ps
 示例：
 
 ```bash
-agent-ssh exec prod1 -- "cd /app && git status"
-agent-ssh exec prod1 -- "journalctl -u nginx -n 100 --no-pager"
-agent-ssh exec prod1 -- docker logs --tail=100 api
+ssh-use exec prod1 -- "cd /app && git status"
+ssh-use exec prod1 -- "journalctl -u nginx -n 100 --no-pager"
+ssh-use exec prod1 -- docker logs --tail=100 api
 ```
 
 内部可保留 daemon 子命令用于调试，但不作为用户主流程。
@@ -250,14 +269,14 @@ agent-ssh exec prod1 -- docker logs --tail=100 api
 
 ```bash
 # 本地上传到远端
-agent-ssh cp ./app.yaml prod1:/etc/app/app.yaml
+ssh-use cp ./app.yaml prod1:/etc/app/app.yaml
 
 # 远端下载到本地
-agent-ssh cp prod1:/var/log/app.log ./app.log
+ssh-use cp prod1:/var/log/app.log ./app.log
 
 # stdin/stdout
-generate-config | agent-ssh cp - prod1:/etc/app/config.yaml
-agent-ssh cp prod1:/var/log/app.log - > ./app.log
+generate-config | ssh-use cp - prod1:/etc/app/config.yaml
+ssh-use cp prod1:/var/log/app.log - > ./app.log
 ```
 
 第一版约束：
@@ -265,7 +284,7 @@ agent-ssh cp prod1:/var/log/app.log - > ./app.log
 ```text
 只支持单个普通文件。
 远端端点格式为 <host>:/absolute/path。
-host 使用 agent-ssh 配置中的用户和密钥，不支持 user@host 临时覆盖。
+host 使用 ssh-use 配置中的用户和密钥，不支持 user@host 临时覆盖。
 不支持本地到本地、远端到远端、目录递归和远端 shell 通配符。
 默认直接写入目标，与 scp 类似；失败时已有目标可能不完整。
 --atomic 使用同目录临时文件和 SFTP POSIX rename，不支持时直接报错。
@@ -277,18 +296,18 @@ host 使用 agent-ssh 配置中的用户和密钥，不支持 user@host 临时�
 不提供：
 
 ```bash
-agent-ssh approve <id>
-agent-ssh reject <id>
-agent-ssh pending
-agent-ssh logs
-agent-ssh status
+ssh-use approve <id>
+ssh-use reject <id>
+ssh-use pending
+ssh-use logs
+ssh-use status
 ```
 
 这些能力全部放进 TUI。
 
 ## AI 执行体验
 
-`agent-ssh exec` 的行为必须尽量接近本地执行命令。
+`ssh-use exec` 的行为必须尽量接近本地执行命令。
 
 输出规则：
 
@@ -296,7 +315,7 @@ agent-ssh status
 远端 stdout -> 本地 stdout
 远端 stderr -> 本地 stderr
 远端 exit code -> 本地 exit code
-agent-ssh 自身提示 -> 本地 stderr
+ssh-use 自身提示 -> 本地 stderr
 ```
 
 daemon 执行远端命令时必须流式转发输出，不等命令结束后一次性返回。
@@ -321,7 +340,7 @@ TUI Activity 显示 queued command 和前序 command id。
 示例：
 
 ```text
-agent-ssh: queued on prod1 behind cmd_01JZAAA, position=2
+ssh-use: queued on prod1 behind cmd_01JZAAA, position=2
 ```
 
 CLI 被中断时的行为：
@@ -338,11 +357,11 @@ running 命令：关闭对应 ssh.Session，尽量终止远端命令。
 
 当命令需要审批且 TUI 已打开时，TUI 自动出现待审批项。
 
-当命令需要审批但 TUI 未打开时，`agent-ssh exec` 输出：
+当命令需要审批但 TUI 未打开时，`ssh-use exec` 输出：
 
 ```text
-agent-ssh: waiting for user approval
-open console: agent-ssh tui
+ssh-use: waiting for user approval
+open console: ssh-use tui
 
 id: cmd_01JZABC
 host: prod1
@@ -352,26 +371,26 @@ command: systemctl restart nginx
 
 用户打开 TUI 后可以审批。
 
-等待审批期间，`agent-ssh exec` 必须定期向 stderr 输出心跳，默认每 30 秒一次：
+等待审批期间，`ssh-use exec` 必须定期向 stderr 输出心跳，默认每 30 秒一次：
 
 ```text
-agent-ssh: still waiting for approval id=cmd_01JZABC elapsed=30s open_console="agent-ssh tui"
+ssh-use: still waiting for approval id=cmd_01JZABC elapsed=30s open_console="ssh-use tui"
 ```
 
 如果 TUI 已连接，心跳中显示：
 
 ```text
-agent-ssh: waiting for approval in TUI id=cmd_01JZABC elapsed=30s
+ssh-use: waiting for approval in TUI id=cmd_01JZABC elapsed=30s
 ```
 
 心跳不能写入 stdout，避免污染远端命令输出。
 
-审批通过后，原 `agent-ssh exec` 继续执行远程命令并返回结果。
+审批通过后，原 `ssh-use exec` 继续执行远程命令并返回结果。
 
-审批拒绝后，`agent-ssh exec` 返回：
+审批拒绝后，`ssh-use exec` 返回：
 
 ```text
-agent-ssh: command rejected by user
+ssh-use: command rejected by user
 ```
 
 建议 exit code：
@@ -383,7 +402,7 @@ agent-ssh: command rejected by user
 审批超时返回：
 
 ```text
-agent-ssh: approval timeout
+ssh-use: approval timeout
 ```
 
 建议 exit code：
@@ -575,7 +594,7 @@ TUI 是用户主界面。
 启动：
 
 ```bash
-agent-ssh tui
+ssh-use tui
 ```
 
 TUI 启动后：
@@ -649,7 +668,7 @@ x cancel selected
 取消行为：
 
 ```text
-PENDING_APPROVAL: 标记 CANCELLED，唤醒等待中的 exec，返回 agent-ssh cancellation。
+PENDING_APPROVAL: 标记 CANCELLED，唤醒等待中的 exec，返回 ssh-use cancellation。
 QUEUED: 标记 CANCELLED，不进入执行。
 RUNNING: 关闭对应 ssh.Session，尽量终止远端命令。
 DONE / FAILED / BLOCKED / REJECTED / TIMEOUT: 不允许取消。
@@ -699,7 +718,7 @@ PAUSED: new commands are not executing
 布局示例：
 
 ```text
-┌─ agent-ssh ───────────────────────────────────────────────────────────────┐
+┌─ ssh-use ───────────────────────────────────────────────────────────────┐
 │ Mode: Sensitive   Pending: 2   Running: 1   Connected: 3   Source: all  │
 ├───────────────────────────────┬───────────────────────────────────────┤
 │ Pending Review                │ Command Detail                        │
@@ -812,7 +831,7 @@ last stdout lines
 last stderr lines
 ```
 
-完整输出仍由 `agent-ssh exec` 流式返回给 AI agent。TUI 只显示最近窗口，避免大输出拖慢界面。
+完整输出仍由 `ssh-use exec` 流式返回给 AI agent。TUI 只显示最近窗口，避免大输出拖慢界面。
 
 ## Connections 页面
 
@@ -1015,7 +1034,7 @@ CLI、TUI 和 daemon 使用 Unix socket 通信。
 Socket 路径：
 
 ```text
-$XDG_RUNTIME_DIR/agent-ssh/agent-ssh.sock
+$XDG_RUNTIME_DIR/ssh-use/ssh-use.sock
 ```
 
 协议使用 JSON lines。
@@ -1032,7 +1051,7 @@ $XDG_RUNTIME_DIR/agent-ssh/agent-ssh.sock
 }
 ```
 
-执行期间，daemon 通过同一个连接向 `agent-ssh exec` 发送流式输出事件。
+执行期间，daemon 通过同一个连接向 `ssh-use exec` 发送流式输出事件。
 
 stdout chunk：
 
@@ -1054,7 +1073,7 @@ stderr chunk：
 }
 ```
 
-`agent-ssh exec` 收到 chunk 后立即写入本地 stdout/stderr。
+`ssh-use exec` 收到 chunk 后立即写入本地 stdout/stderr。
 
 最终响应：
 
@@ -1064,7 +1083,7 @@ stderr chunk：
   "id": "cmd_01JZABC",
   "status": "done",
   "remote_exit_code": 0,
-  "agent_ssh_error_code": ""
+  "ssh_use_error_code": ""
 }
 ```
 
@@ -1148,7 +1167,7 @@ TUI 暂停或恢复请求：
 路径：
 
 ```text
-~/.local/share/agent-ssh/agent-ssh.db
+~/.local/share/ssh-use/ssh-use.db
 ```
 
 命令表字段：
@@ -1171,7 +1190,7 @@ policy_action
 policy_rule
 status
 remote_exit_code
-agent_ssh_error_code
+ssh_use_error_code
 duration_ms
 stdout
 stderr
@@ -1311,7 +1330,7 @@ defaults:
 路径：
 
 ```text
-~/.config/agent-ssh/config.yaml
+~/.config/ssh-use/config.yaml
 ```
 
 示例：
@@ -1320,7 +1339,7 @@ defaults:
 defaults:
   user: root
   port: 22
-  key: ~/.ssh/id_ed25519_agent_ssh
+  key: ~/.ssh/id_ed25519_ssh_use
   idle_timeout: 10m
   connect_timeout: 10s
   command_timeout: 5m
@@ -1329,12 +1348,12 @@ hosts:
   prod1:
     addr: 10.0.0.11
     user: root
-    key: ~/.ssh/id_ed25519_agent_ssh
+    key: ~/.ssh/id_ed25519_ssh_use
 
   prod2:
     addr: 10.0.0.12
     user: ubuntu
-    key: ~/.ssh/id_ed25519_agent_ssh
+    key: ~/.ssh/id_ed25519_ssh_use
 
 policy:
   mode: sensitive
@@ -1363,8 +1382,8 @@ tui:
 支持通过环境变量识别来源：
 
 ```bash
-AGENT_SSH_SOURCE=claude-code agent-ssh exec prod1 -- "uptime"
-AGENT_SSH_SOURCE=opencode agent-ssh exec prod1 -- "uptime"
+SSH_USE_SOURCE=claude-code ssh-use exec prod1 -- "uptime"
+SSH_USE_SOURCE=opencode ssh-use exec prod1 -- "uptime"
 ```
 
 也可以由 CLI 自动采集：
@@ -1404,7 +1423,7 @@ default_action 默认为 allow，只审批命中敏感规则的命令。
 SSH key 建议：
 
 ```text
-为 agent-ssh 创建专用 key。
+为 ssh-use 创建专用 key。
 不要复用个人主 key。
 按服务器和用户限制权限。
 生产环境不要关闭 host key 校验。
@@ -1437,10 +1456,10 @@ TUI 推荐使用 Bubble Tea，因为事件驱动模型适合 daemon 事件流。
 推荐结构：
 
 ```text
- agent-ssh/
+ ssh-use/
   go.mod
   cmd/
-    agent-ssh/
+    ssh-use/
       main.go
   internal/
      cli/
@@ -1488,10 +1507,10 @@ TUI 推荐使用 Bubble Tea，因为事件驱动模型适合 daemon 事件流。
 第一版必须实现：
 
 ```text
-agent-ssh exec
-agent-ssh cp
-agent-ssh tui
-agent-ssh tui --safe
+ssh-use exec
+ssh-use cp
+ssh-use tui
+ssh-use tui --safe
 daemon 自动启动
 Unix socket JSON lines 协议
 SSH client 连接池
@@ -1562,7 +1581,7 @@ append-only audit hash chain
 ```text
 1. 配置加载
 2. Unix socket daemon
-3. agent-ssh exec 请求和响应
+3. ssh-use exec 请求和响应
 4. SSH 连接池
 5. 单 host 命令执行
 6. stdout/stderr 流式返回
@@ -1586,14 +1605,14 @@ append-only audit hash chain
 用户打开 TUI：
 
 ```bash
-agent-ssh tui
+ssh-use tui
 ```
 
 AI agent 执行：
 
 ```bash
-agent-ssh exec prod1 -- "docker ps"
-agent-ssh exec prod1 -- "systemctl restart nginx"
+ssh-use exec prod1 -- "docker ps"
+ssh-use exec prod1 -- "systemctl restart nginx"
 ```
 
 TUI 实时展示：

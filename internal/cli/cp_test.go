@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 func TestParseCopyArgs(t *testing.T) {

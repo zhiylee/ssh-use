@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"agent-ssh/internal/audit"
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/policy"
-	"agent-ssh/internal/protocol"
-	"agent-ssh/internal/sshpool"
+	"github.com/zhiylee/ssh-use/internal/audit"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/policy"
+	"github.com/zhiylee/ssh-use/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/sshpool"
 )
 
 func TestApprovalDecideAndCancel(t *testing.T) {
@@ -129,7 +129,7 @@ func TestReloadConfigAddsHostAndUpdatesPolicy(t *testing.T) {
 func TestReloadConfigFailureKeepsPreviousGeneration(t *testing.T) {
 	s := newTestServer(t)
 	previousConfig, previousPolicy := s.currentConfig()
-	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	path := os.Getenv("SSH_USE_CONFIG_PATH")
 	if err := os.WriteFile(path, []byte("hosts: ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestReloadConfigFailureKeepsPreviousGeneration(t *testing.T) {
 func TestReloadConfigRejectsBytesFromSupersededFile(t *testing.T) {
 	s := newTestServer(t)
 	previousConfig, previousPolicy := s.currentConfig()
-	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	path := os.Getenv("SSH_USE_CONFIG_PATH")
 	oldData := []byte("policy:\n  mode: auto\n")
 	if err := os.WriteFile(path, oldData, 0o600); err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestWatchConfigReloadsChangedFile(t *testing.T) {
 		return current.Hosts["watched"].Addr == "10.0.0.1"
 	})
 
-	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	path := os.Getenv("SSH_USE_CONFIG_PATH")
 	if err := os.WriteFile(path, []byte("policy:\n  mode: invalid\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -276,7 +276,7 @@ func TestEventForStatus(t *testing.T) {
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	t.Setenv("AGENT_SSH_CONFIG_PATH", filepath.Join(t.TempDir(), "config.yaml"))
+	t.Setenv("SSH_USE_CONFIG_PATH", filepath.Join(t.TempDir(), "config.yaml"))
 	cfg := config.Default()
 	engine, err := policy.New(cfg.Policy)
 	if err != nil {
@@ -308,16 +308,16 @@ func TestAcquireHostCancellation(t *testing.T) {
 	}
 }
 
-func TestFinalAgentSSHErrorAndUpdateOutput(t *testing.T) {
+func TestFinalSSHUseErrorAndUpdateOutput(t *testing.T) {
 	s := newTestServer(t)
 	state := &commandState{record: model.CommandRecord{ID: "cmd", StartedAt: time.Now().Add(-time.Second)}, approval: make(chan string, 1)}
 	s.addCommand(state)
 	var sent []protocol.Message
-	s.finalAgentSSHError(func(msg protocol.Message) error {
+	s.finalSSHUseError(func(msg protocol.Message) error {
 		sent = append(sent, msg)
 		return nil
 	}, state, model.StatusRejected, "approval_rejected", "no")
-	if len(sent) != 1 || sent[0].Type != "final" || sent[0].AgentSSHErrorCode != "approval_rejected" {
+	if len(sent) != 1 || sent[0].Type != "final" || sent[0].SSHUseErrorCode != "approval_rejected" {
 		t.Fatalf("sent=%#v", sent)
 	}
 	rec := cloneRecord(state)
@@ -370,7 +370,7 @@ func TestWaitApprovalApproveRejectTimeout(t *testing.T) {
 	if s.waitApproval(context.Background(), func(msg protocol.Message) error { final = msg; return nil }, state, model.PolicyDecision{}) {
 		t.Fatal("reject should stop")
 	}
-	if final.AgentSSHErrorCode != "approval_rejected" {
+	if final.SSHUseErrorCode != "approval_rejected" {
 		t.Fatalf("final=%#v", final)
 	}
 
@@ -379,7 +379,7 @@ func TestWaitApprovalApproveRejectTimeout(t *testing.T) {
 	if s.waitApproval(context.Background(), func(protocol.Message) error { return nil }, state, model.PolicyDecision{}) {
 		t.Fatal("timeout should stop")
 	}
-	if cloneRecord(state).AgentSSHErrorCode != "approval_timeout" {
+	if cloneRecord(state).SSHUseErrorCode != "approval_timeout" {
 		t.Fatalf("record=%#v", cloneRecord(state))
 	}
 }
@@ -412,7 +412,7 @@ func TestHandleConnSimpleRequests(t *testing.T) {
 	if err := dec.Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Type != "error" || resp.AgentSSHErrorCode != "protocol_error" {
+	if resp.Type != "error" || resp.SSHUseErrorCode != "protocol_error" {
 		t.Fatalf("resp=%#v", resp)
 	}
 	client.Close()
@@ -664,7 +664,7 @@ func TestHandleTransferRejectsFailedLocalCommit(t *testing.T) {
 			}
 		}
 		if msg.Type == "final" {
-			if msg.OK || msg.AgentSSHErrorCode != "transfer_failed" || !bytes.Contains([]byte(msg.Error), []byte("disk full")) {
+			if msg.OK || msg.SSHUseErrorCode != "transfer_failed" || !bytes.Contains([]byte(msg.Error), []byte("disk full")) {
 				t.Fatalf("final=%#v", msg)
 			}
 			client.Close()

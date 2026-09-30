@@ -21,7 +21,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"agent-ssh/internal/config"
+	"github.com/zhiylee/ssh-use/internal/config"
 )
 
 func TestConnKey(t *testing.T) {

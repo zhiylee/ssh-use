@@ -1,4 +1,4 @@
-module agent-ssh
+module github.com/zhiylee/ssh-use
 
 go 1.26
 

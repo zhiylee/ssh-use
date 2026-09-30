@@ -19,8 +19,8 @@ import (
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
 
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
 )
 
 var (
@@ -354,7 +354,7 @@ func atomicTempPath(destination, seed string) string {
 	if len(seed) > 32 {
 		seed = seed[len(seed)-32:]
 	}
-	return path.Join(path.Dir(destination), "."+name+".agent-ssh-"+seed+".tmp")
+	return path.Join(path.Dir(destination), "."+name+".ssh-use-"+seed+".tmp")
 }
 
 func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {

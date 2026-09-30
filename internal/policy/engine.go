@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
 )
 
 type Engine struct {

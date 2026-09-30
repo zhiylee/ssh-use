@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 func TestParseExecArgsSingleString(t *testing.T) {
@@ -55,7 +55,7 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-func TestExitCodeForAgentSSHError(t *testing.T) {
+func TestExitCodeForSSHUseError(t *testing.T) {
 	tests := map[string]int{
 		"approval_rejected": 126,
 		"policy_blocked":    126,
@@ -67,8 +67,8 @@ func TestExitCodeForAgentSSHError(t *testing.T) {
 		"unknown":           1,
 	}
 	for code, want := range tests {
-		if got := exitCodeForAgentSSHError(code); got != want {
-			t.Fatalf("exitCodeForAgentSSHError(%q)=%d want=%d", code, got, want)
+		if got := exitCodeForSSHUseError(code); got != want {
+			t.Fatalf("exitCodeForSSHUseError(%q)=%d want=%d", code, got, want)
 		}
 	}
 }
@@ -108,14 +108,14 @@ func TestRunExecStreamsAndReturnsRemoteExit(t *testing.T) {
 	}
 }
 
-func TestRunExecAgentSSHErrors(t *testing.T) {
+func TestRunExecSSHUseErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		msg  protocol.Message
 		want int
 	}{
-		{"final", protocol.Message{Type: "final", OK: false, Error: "blocked", AgentSSHErrorCode: "policy_blocked"}, 126},
-		{"error", protocol.Message{Type: "error", Error: "timeout", AgentSSHErrorCode: "approval_timeout"}, 124},
+		{"final", protocol.Message{Type: "final", OK: false, Error: "blocked", SSHUseErrorCode: "policy_blocked"}, 126},
+		{"error", protocol.Message{Type: "error", Error: "timeout", SSHUseErrorCode: "approval_timeout"}, 124},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

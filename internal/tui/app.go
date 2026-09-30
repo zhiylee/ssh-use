@@ -18,11 +18,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
-	"agent-ssh/internal/client"
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/paths"
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/client"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/paths"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 var (
@@ -121,22 +121,22 @@ func Run(args []string) int {
 		case "--safe":
 			safe = true
 		default:
-			fmt.Fprintf(os.Stderr, "agent-ssh: unknown tui arg %q\n", arg)
+			fmt.Fprintf(os.Stderr, "ssh-use: unknown tui arg %q\n", arg)
 			return 2
 		}
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ssh-use: %v\n", err)
 		return 1
 	}
 	if err := ensureDaemonFn(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ssh-use: %v\n", err)
 		return 1
 	}
 	sub, err := newSubscription()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent-ssh: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ssh-use: %v\n", err)
 		return 1
 	}
 	defer sub.conn.Close()
@@ -144,7 +144,7 @@ func Run(args []string) int {
 	m := newAppWithConfig(safe, sub, cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "agent-ssh tui: %v\n", err)
+		fmt.Fprintf(os.Stderr, "ssh-use tui: %v\n", err)
 		return 1
 	}
 	return 0
@@ -301,7 +301,7 @@ func (a *app) resizeViewport() {
 
 func (a app) View() string {
 	if a.width == 0 {
-		return "Starting agent-ssh…"
+		return "Starting ssh-use…"
 	}
 	if a.width < 40 || a.height < 14 {
 		return a.styles.panel.Render(fmt.Sprintf("Terminal too small\n\nCurrent: %d×%d\nRequired: 40×14", a.width, a.height))
@@ -853,7 +853,7 @@ func (a *app) header() string {
 			tabs[i] = a.styles.tab.Render(tabs[i])
 		}
 	}
-	line := fmt.Sprintf("agent-ssh  %s  %s", status, a.styles.mode(a.mode).Render(strings.ToUpper(a.mode)))
+	line := fmt.Sprintf("ssh-use  %s  %s", status, a.styles.mode(a.mode).Render(strings.ToUpper(a.mode)))
 	counts := fmt.Sprintf("Review %d  Running %d  Attention %d  SSH %d", pending, running, failed, len(a.connections))
 	if a.width >= 92 {
 		line += "  " + counts
@@ -1148,8 +1148,8 @@ func commandDetail(rec model.CommandRecord, s styles, width int) string {
 		"Matched: " + emptyDash(safeText(rec.MatchedPattern)),
 		"Reason: " + emptyDash(safeText(rec.PolicyReason)),
 	}
-	if rec.Error != "" || rec.AgentSSHErrorCode != "" {
-		lines = append(lines, "Error: "+emptyDash(safeText(rec.AgentSSHErrorCode))+" "+safeText(rec.Error))
+	if rec.Error != "" || rec.SSHUseErrorCode != "" {
+		lines = append(lines, "Error: "+emptyDash(safeText(rec.SSHUseErrorCode))+" "+safeText(rec.Error))
 	}
 	lines = append(lines, "", s.section.Render("Command"), wrapText(safeText(displayCommand(rec)), innerWidth))
 	stdoutTitle := "stdout tail"

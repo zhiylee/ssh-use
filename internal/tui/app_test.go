@@ -11,9 +11,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
 func TestApplySnapshotAndVisibleCommands(t *testing.T) {
@@ -227,7 +227,7 @@ func TestUpdateKeyAndViewFlow(t *testing.T) {
 		t.Fatalf("filter input did not finish: mode=%d filter=%q", a.inputMode, a.filter)
 	}
 	view := a.View()
-	if !strings.Contains(view, "agent-ssh") || !strings.Contains(view, "restart") {
+	if !strings.Contains(view, "ssh-use") || !strings.Contains(view, "restart") {
 		t.Fatalf("view=%q", view)
 	}
 }

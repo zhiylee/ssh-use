@@ -15,14 +15,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"agent-ssh/internal/audit"
-	"agent-ssh/internal/config"
-	"agent-ssh/internal/model"
-	"agent-ssh/internal/paths"
-	"agent-ssh/internal/policy"
-	"agent-ssh/internal/protocol"
-	"agent-ssh/internal/redact"
-	"agent-ssh/internal/sshpool"
+	"github.com/zhiylee/ssh-use/internal/audit"
+	"github.com/zhiylee/ssh-use/internal/config"
+	"github.com/zhiylee/ssh-use/internal/model"
+	"github.com/zhiylee/ssh-use/internal/paths"
+	"github.com/zhiylee/ssh-use/internal/policy"
+	"github.com/zhiylee/ssh-use/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/redact"
+	"github.com/zhiylee/ssh-use/internal/sshpool"
 )
 
 type Server struct {
@@ -316,7 +316,7 @@ func (s *Server) watchConfig(ctx context.Context, interval time.Duration) {
 				if !haveFailed || digest != failed {
 					failed = digest
 					haveFailed = true
-					fmt.Fprintf(os.Stderr, "agent-ssh daemon: config reload failed: %v\n", err)
+					fmt.Fprintf(os.Stderr, "ssh-use daemon: config reload failed: %v\n", err)
 					s.broadcast(protocol.Message{Type: "config.reload_failed", Error: err.Error()})
 				}
 				continue
@@ -390,33 +390,33 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 		s.broadcast(protocol.Message{Type: "connection.updated", Host: msg.Host})
 		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID})
 	default:
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "unknown request type", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "unknown request type", SSHUseErrorCode: "protocol_error"})
 	}
 }
 
 func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *protocol.Encoder, dec *protocol.Decoder, req protocol.Message) {
 	if req.Host == "" || req.LocalPath == "" || req.RemotePath == "" {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "host, local path, and remote path are required", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "host, local path, and remote path are required", SSHUseErrorCode: "protocol_error"})
 		return
 	}
 	if req.Direction != "upload" && req.Direction != "download" {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "transfer direction must be upload or download", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "transfer direction must be upload or download", SSHUseErrorCode: "protocol_error"})
 		return
 	}
 	if !path.IsAbs(req.RemotePath) {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "remote path must be absolute", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "remote path must be absolute", SSHUseErrorCode: "protocol_error"})
 		return
 	}
 	req.RemotePath = path.Clean(req.RemotePath)
 	if req.Size < -1 {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "invalid transfer size", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "invalid transfer size", SSHUseErrorCode: "protocol_error"})
 		return
 	}
 
 	runtimeCfg, policyEngine := s.currentConfig()
 	hostCfg, err := runtimeCfg.ResolveHost(req.Host)
 	if err != nil {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), AgentSSHErrorCode: "config_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), SSHUseErrorCode: "config_error"})
 		return
 	}
 
@@ -461,11 +461,11 @@ func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *prot
 	s.save(state)
 
 	if !s.waitIfPaused(cmdCtx, state) {
-		s.finalAgentSSHError(safeEncode, state, model.StatusCancelled, "cancelled", "transfer cancelled")
+		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "transfer cancelled")
 		return
 	}
 	if decision.Action == model.ActionBlock {
-		s.finalAgentSSHError(safeEncode, state, model.StatusBlocked, "policy_blocked", "transfer blocked by policy")
+		s.finalSSHUseError(safeEncode, state, model.StatusBlocked, "policy_blocked", "transfer blocked by policy")
 		return
 	}
 	if decision.Action == model.ActionApprove {
@@ -476,7 +476,7 @@ func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *prot
 
 	release, ok := s.acquireHost(cmdCtx, safeEncode, state)
 	if !ok {
-		s.finalAgentSSHError(safeEncode, state, model.StatusCancelled, "cancelled", "transfer cancelled")
+		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "transfer cancelled")
 		return
 	}
 	defer release()
@@ -564,22 +564,22 @@ func (s *Server) finishTransfer(encode func(protocol.Message) error, state *comm
 		state.record.Status = model.StatusDone
 	} else if errors.Is(err, sshpool.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
 		state.record.Status = model.StatusTimeout
-		state.record.AgentSSHErrorCode = "command_timeout"
+		state.record.SSHUseErrorCode = "command_timeout"
 		state.record.Error = "transfer timeout"
 	} else if errors.Is(err, sshpool.ErrCancelled) || errors.Is(err, context.Canceled) {
 		state.record.Status = model.StatusCancelled
-		state.record.AgentSSHErrorCode = "cancelled"
+		state.record.SSHUseErrorCode = "cancelled"
 		state.record.Error = "transfer cancelled"
 	} else {
 		state.record.Status = model.StatusFailed
-		state.record.AgentSSHErrorCode = "transfer_failed"
+		state.record.SSHUseErrorCode = "transfer_failed"
 		state.record.Error = err.Error()
 	}
 	final := state.record
 	state.mu.Unlock()
 
 	s.saveAndBroadcast(state, eventForStatus(final.Status))
-	msg := protocol.Message{Type: "final", ID: final.ID, OK: err == nil, Status: string(final.Status), AgentSSHErrorCode: final.AgentSSHErrorCode, Error: final.Error, Bytes: result.Bytes, Checksum: result.Checksum}
+	msg := protocol.Message{Type: "final", ID: final.ID, OK: err == nil, Status: string(final.Status), SSHUseErrorCode: final.SSHUseErrorCode, Error: final.Error, Bytes: result.Bytes, Checksum: result.Checksum}
 	_ = encode(msg)
 }
 
@@ -696,14 +696,14 @@ func validateUpload(req protocol.Message, reader *transferChunkReader, result ss
 
 func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req protocol.Message) {
 	if req.Host == "" || req.Command == "" {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "host and command are required", AgentSSHErrorCode: "protocol_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: "host and command are required", SSHUseErrorCode: "protocol_error"})
 		return
 	}
 
 	runtimeCfg, policyEngine := s.currentConfig()
 	hostCfg, err := runtimeCfg.ResolveHost(req.Host)
 	if err != nil {
-		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), AgentSSHErrorCode: "config_error"})
+		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), SSHUseErrorCode: "config_error"})
 		return
 	}
 
@@ -747,12 +747,12 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 	s.save(state)
 
 	if !s.waitIfPaused(cmdCtx, state) {
-		s.finalAgentSSHError(safeEncode, state, model.StatusCancelled, "cancelled", "command cancelled")
+		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "command cancelled")
 		return
 	}
 
 	if decision.Action == model.ActionBlock {
-		s.finalAgentSSHError(safeEncode, state, model.StatusBlocked, "policy_blocked", "command blocked by policy")
+		s.finalSSHUseError(safeEncode, state, model.StatusBlocked, "policy_blocked", "command blocked by policy")
 		return
 	}
 
@@ -764,7 +764,7 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 
 	release, ok := s.acquireHost(cmdCtx, safeEncode, state)
 	if !ok {
-		s.finalAgentSSHError(safeEncode, state, model.StatusCancelled, "cancelled", "command cancelled")
+		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "command cancelled")
 		return
 	}
 	defer release()
@@ -822,23 +822,23 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 		state.record.Error = err.Error()
 	} else if errors.Is(err, sshpool.ErrTimeout) {
 		state.record.Status = model.StatusTimeout
-		state.record.AgentSSHErrorCode = "command_timeout"
+		state.record.SSHUseErrorCode = "command_timeout"
 		state.record.Error = "command timeout"
 	} else if errors.Is(err, sshpool.ErrCancelled) || errors.Is(commandCtx.Err(), context.Canceled) {
 		state.record.Status = model.StatusCancelled
-		state.record.AgentSSHErrorCode = "cancelled"
+		state.record.SSHUseErrorCode = "cancelled"
 		state.record.Error = "command cancelled"
 	} else {
 		state.record.Status = model.StatusFailed
-		state.record.AgentSSHErrorCode = "ssh_failed"
+		state.record.SSHUseErrorCode = "ssh_failed"
 		state.record.Error = err.Error()
 	}
 	final := state.record
 	state.mu.Unlock()
 
 	s.saveAndBroadcast(state, eventForStatus(final.Status))
-	if final.AgentSSHErrorCode != "" {
-		_ = safeEncode(protocol.Message{Type: "final", ID: id, OK: false, Status: string(final.Status), AgentSSHErrorCode: final.AgentSSHErrorCode, Error: final.Error, RemoteExitCode: final.RemoteExitCode})
+	if final.SSHUseErrorCode != "" {
+		_ = safeEncode(protocol.Message{Type: "final", ID: id, OK: false, Status: string(final.Status), SSHUseErrorCode: final.SSHUseErrorCode, Error: final.Error, RemoteExitCode: final.RemoteExitCode})
 		return
 	}
 	_ = safeEncode(protocol.Message{Type: "final", ID: id, OK: true, Status: string(final.Status), RemoteExitCode: final.RemoteExitCode})
@@ -895,10 +895,10 @@ func (s *Server) waitApproval(ctx context.Context, encode func(protocol.Message)
 				s.saveAndBroadcast(state, "command.approved")
 				return true
 			case "reject":
-				s.finalAgentSSHError(encode, state, model.StatusRejected, "approval_rejected", "command rejected by user")
+				s.finalSSHUseError(encode, state, model.StatusRejected, "approval_rejected", "command rejected by user")
 				return false
 			case "cancel":
-				s.finalAgentSSHError(encode, state, model.StatusCancelled, "cancelled", "command cancelled")
+				s.finalSSHUseError(encode, state, model.StatusCancelled, "cancelled", "command cancelled")
 				return false
 			}
 		case <-ticker.C:
@@ -907,10 +907,10 @@ func (s *Server) waitApproval(ctx context.Context, encode func(protocol.Message)
 			s.mu.Unlock()
 			_ = encode(protocol.Message{Type: "approval.heartbeat", ID: state.record.ID, Elapsed: time.Since(started).Round(time.Second).String(), TUIConnected: tuiConnected})
 		case <-timeout.C:
-			s.finalAgentSSHError(encode, state, model.StatusTimeout, "approval_timeout", "approval timeout")
+			s.finalSSHUseError(encode, state, model.StatusTimeout, "approval_timeout", "approval timeout")
 			return false
 		case <-ctx.Done():
-			s.finalAgentSSHError(encode, state, model.StatusCancelled, "cancelled", "command cancelled")
+			s.finalSSHUseError(encode, state, model.StatusCancelled, "cancelled", "command cancelled")
 			return false
 		}
 	}
@@ -964,7 +964,7 @@ func (s *Server) hostQueue(host string) *hostQueue {
 	return q
 }
 
-func (s *Server) finalAgentSSHError(encode func(protocol.Message) error, state *commandState, status model.Status, code, message string) {
+func (s *Server) finalSSHUseError(encode func(protocol.Message) error, state *commandState, status model.Status, code, message string) {
 	state.mu.Lock()
 	now := time.Now()
 	state.record.Status = status
@@ -972,7 +972,7 @@ func (s *Server) finalAgentSSHError(encode func(protocol.Message) error, state *
 	if !state.record.StartedAt.IsZero() {
 		state.record.DurationMS = now.Sub(state.record.StartedAt).Milliseconds()
 	}
-	state.record.AgentSSHErrorCode = code
+	state.record.SSHUseErrorCode = code
 	state.record.Error = message
 	if status == model.StatusRejected {
 		state.record.ApprovalStatus = "rejected"
@@ -980,7 +980,7 @@ func (s *Server) finalAgentSSHError(encode func(protocol.Message) error, state *
 	final := state.record
 	state.mu.Unlock()
 	s.saveAndBroadcast(state, eventForStatus(status))
-	_ = encode(protocol.Message{Type: "final", ID: final.ID, OK: false, Status: string(status), AgentSSHErrorCode: code, Error: message})
+	_ = encode(protocol.Message{Type: "final", ID: final.ID, OK: false, Status: string(status), SSHUseErrorCode: code, Error: message})
 }
 
 func (s *Server) approvalDecide(id, decision string) protocol.Message {
@@ -1033,7 +1033,7 @@ func (s *Server) cancelCommand(id, reason string) protocol.Message {
 	if status != model.StatusRunning {
 		state.mu.Lock()
 		state.record.Status = model.StatusCancelled
-		state.record.AgentSSHErrorCode = "cancelled"
+		state.record.SSHUseErrorCode = "cancelled"
 		state.record.Error = reason
 		state.record.FinishedAt = time.Now()
 		state.mu.Unlock()
