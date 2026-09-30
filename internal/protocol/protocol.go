@@ -47,7 +47,23 @@ type Message struct {
 	Commands          []model.CommandRecord    `json:"commands,omitempty"`
 	Connections       []model.ConnectionStatus `json:"connections,omitempty"`
 	PolicyRules       []model.PolicyRuleView   `json:"policy_rules,omitempty"`
+	Revision          uint64                   `json:"revision,omitempty"`
 	PolicyDecision    *model.PolicyDecision    `json:"policy_decision,omitempty"`
+	RuntimeSettings   *RuntimeSettings         `json:"runtime_settings,omitempty"`
+}
+
+type RuntimeSettings struct {
+	Generation          uint64   `json:"generation"`
+	Mode                string   `json:"mode"`
+	PolicyDefaultAction string   `json:"policy_default_action"`
+	BuiltinRules        bool     `json:"builtin_rules"`
+	AuditStoreOutput    string   `json:"audit_store_output"`
+	AuditRetentionDays  int      `json:"audit_retention_days"`
+	RedactSecrets       bool     `json:"redact_secrets"`
+	ConfirmRisks        []string `json:"confirm_risks"`
+	Theme               string   `json:"theme"`
+	FocusPending        bool     `json:"focus_pending"`
+	BellOnPending       bool     `json:"bell_on_pending"`
 }
 
 func NewEncoder(w io.Writer) *json.Encoder {

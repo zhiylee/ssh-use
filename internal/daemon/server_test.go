@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -82,6 +83,9 @@ func TestSnapshotAndPolicyRules(t *testing.T) {
 	if snap.Type != "snapshot" || !snap.OK || len(snap.Commands) != 1 {
 		t.Fatalf("snapshot = %#v", snap)
 	}
+	if snap.RuntimeSettings == nil || snap.RuntimeSettings.Generation != 1 || snap.RuntimeSettings.Mode != config.ModeSensitive || len(snap.RuntimeSettings.ConfirmRisks) != 2 {
+		t.Fatalf("runtime settings = %#v", snap.RuntimeSettings)
+	}
 	found := false
 	for _, rule := range snap.PolicyRules {
 		if rule.Name == "readonly_inspection" && rule.Matches == 1 {
@@ -91,6 +95,151 @@ func TestSnapshotAndPolicyRules(t *testing.T) {
 	if !found {
 		t.Fatalf("policy rules missing match count: %#v", snap.PolicyRules)
 	}
+}
+
+func TestReloadConfigAddsHostAndUpdatesPolicy(t *testing.T) {
+	s := newTestServer(t)
+	fake := &fakeExecutor{}
+	s.pool = fake
+	falseValue := false
+	cfg := config.Default()
+	cfg.Hosts["new-server"] = config.Host{Addr: "10.20.30.40", User: "deploy", Port: 2222, Key: "/tmp/new-key"}
+	cfg.Policy.BuiltinRules = &falseValue
+	cfg.Policy.Rules = []config.RuleConfig{{Name: "block_deploy", Action: "block", Risk: "critical", Patterns: []string{`^deploy$`}}}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reloadConfig(); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	s.handleExec(context.Background(), protocol.NewEncoder(&output), protocol.Message{Type: "exec", Host: "new-server", Command: "uptime"})
+	if fake.executions != 1 || fake.lastExecHost.Addr != "10.20.30.40" || fake.lastExecHost.User != "deploy" || fake.lastExecHost.Port != 2222 {
+		t.Fatalf("new host was not applied: executions=%d host=%#v", fake.executions, fake.lastExecHost)
+	}
+
+	output.Reset()
+	s.handleExec(context.Background(), protocol.NewEncoder(&output), protocol.Message{Type: "exec", Host: "new-server", Command: "deploy"})
+	if fake.executions != 1 || !bytes.Contains(output.Bytes(), []byte("policy_blocked")) {
+		t.Fatalf("reloaded policy was not applied: executions=%d output=%s", fake.executions, output.String())
+	}
+}
+
+func TestReloadConfigFailureKeepsPreviousGeneration(t *testing.T) {
+	s := newTestServer(t)
+	previousConfig, previousPolicy := s.currentConfig()
+	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	if err := os.WriteFile(path, []byte("hosts: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reloadConfig(); err == nil {
+		t.Fatal("expected malformed config to fail")
+	}
+	currentConfig, currentPolicy := s.currentConfig()
+	if currentConfig != previousConfig || currentPolicy != previousPolicy {
+		t.Fatal("malformed config replaced the active generation")
+	}
+
+	falseValue := false
+	cfg := config.Default()
+	cfg.Policy.BuiltinRules = &falseValue
+	cfg.Policy.Rules = []config.RuleConfig{{Name: "bad_regex", Action: "block", Risk: "critical", Patterns: []string{"("}}}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reloadConfig(); err == nil {
+		t.Fatal("expected invalid policy regex to fail")
+	}
+	currentConfig, currentPolicy = s.currentConfig()
+	if currentConfig != previousConfig || currentPolicy != previousPolicy {
+		t.Fatal("invalid policy replaced the active generation")
+	}
+}
+
+func TestReloadConfigRejectsBytesFromSupersededFile(t *testing.T) {
+	s := newTestServer(t)
+	previousConfig, previousPolicy := s.currentConfig()
+	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	oldData := []byte("policy:\n  mode: auto\n")
+	if err := os.WriteFile(path, oldData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("policy:\n  mode: approval\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reloadConfigData(oldData); !errors.Is(err, errConfigChanged) {
+		t.Fatalf("reload error = %v", err)
+	}
+	currentConfig, currentPolicy := s.currentConfig()
+	if currentConfig != previousConfig || currentPolicy != previousPolicy {
+		t.Fatal("superseded bytes replaced the active generation")
+	}
+}
+
+func TestWatchConfigReloadsChangedFile(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.watchConfig(ctx, 5*time.Millisecond)
+
+	cfg := config.Default()
+	cfg.Hosts["watched"] = config.Host{Addr: "10.0.0.1"}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		current, _ := s.currentConfig()
+		return current.Hosts["watched"].Addr == "10.0.0.1"
+	})
+
+	path := os.Getenv("AGENT_SSH_CONFIG_PATH")
+	if err := os.WriteFile(path, []byte("policy:\n  mode: invalid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(40 * time.Millisecond)
+	current, _ := s.currentConfig()
+	if current.Hosts["watched"].Addr != "10.0.0.1" {
+		t.Fatal("invalid watched config replaced active config")
+	}
+
+	cfg.Hosts["watched"] = config.Host{Addr: "10.0.0.2"}
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		current, _ := s.currentConfig()
+		return current.Hosts["watched"].Addr == "10.0.0.2"
+	})
+}
+
+func TestWatchConfigAllowsInitiallyMissingFile(t *testing.T) {
+	s := newTestServer(t)
+	events := make(chan protocol.Message, 1)
+	s.mu.Lock()
+	s.subscribers[events] = struct{}{}
+	s.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.watchConfig(ctx, 5*time.Millisecond)
+
+	select {
+	case event := <-events:
+		t.Fatalf("missing optional config emitted event: %#v", event)
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func waitFor(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestLimitedBuffer(t *testing.T) {
@@ -134,14 +283,15 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatal(err)
 	}
 	return &Server{
-		cfg:         cfg,
-		policy:      engine,
-		audit:       &audit.Store{},
-		pool:        sshpool.New(cfg),
-		commands:    map[string]*commandState{},
-		subscribers: map[chan protocol.Message]struct{}{},
-		hostQueues:  map[string]*hostQueue{},
-		resumeCh:    make(chan struct{}),
+		cfg:              cfg,
+		policy:           engine,
+		configGeneration: 1,
+		audit:            &audit.Store{},
+		pool:             sshpool.New(),
+		commands:         map[string]*commandState{},
+		subscribers:      map[chan protocol.Message]struct{}{},
+		hostQueues:       map[string]*hostQueue{},
+		resumeCh:         make(chan struct{}),
 	}
 }
 
@@ -534,9 +684,13 @@ type fakeExecutor struct {
 	exit         int
 	err          error
 	noRemoteExit bool
+	executions   int
+	lastExecHost config.Host
 }
 
 func (f *fakeExecutor) Execute(ctx context.Context, opts sshpool.ExecOptions) (sshpool.ExecResult, error) {
+	f.executions++
+	f.lastExecHost = opts.ResolvedHost
 	if len(f.stdout) > 0 {
 		opts.Stdout(f.stdout)
 	}
@@ -596,6 +750,7 @@ func (f *fakeExecutor) Statuses() []model.ConnectionStatus {
 func (f *fakeExecutor) CloseIdle(time.Duration)        {}
 func (f *fakeExecutor) CloseAllIdle()                  {}
 func (f *fakeExecutor) CloseHostIdle(host string) bool { return host == "h" }
+func (f *fakeExecutor) ApplyConfig(*config.Config)     {}
 
 func netPipe(t *testing.T) (client, server net.Conn) {
 	t.Helper()

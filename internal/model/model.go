@@ -20,6 +20,15 @@ const (
 	StatusCancelFailed    Status = "CANCEL_FAILED"
 )
 
+func (s Status) Cancellable() bool {
+	switch s {
+	case StatusCreated, StatusPaused, StatusPendingApproval, StatusApproved, StatusQueued, StatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 type Action string
 
 const (

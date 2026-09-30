@@ -56,6 +56,15 @@ func TestXDGPathsAndLogPath(t *testing.T) {
 	}
 }
 
+func TestRuntimeDirFallback(t *testing.T) {
+	if got := fallbackRuntimeDir(123, "/tmp/test", true); got != "/run/user/123/agent-ssh" {
+		t.Fatalf("system user runtime=%q", got)
+	}
+	if got := fallbackRuntimeDir(123, "/tmp/test", false); got != filepath.Join("/tmp/test", "agent-ssh-123") {
+		t.Fatalf("temporary runtime=%q", got)
+	}
+}
+
 func TestHomeFallbackPaths(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("AGENT_SSH_RUNTIME_DIR", "")

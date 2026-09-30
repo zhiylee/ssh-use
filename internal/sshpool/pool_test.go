@@ -25,15 +25,44 @@ import (
 )
 
 func TestConnKey(t *testing.T) {
-	host := config.Host{Addr: "1.2.3.4", User: "root", Port: 22, Key: "/k"}
-	got := connKey("prod", host)
-	if got != "prod|root|1.2.3.4|22|/k" {
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, []byte("key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := config.Host{Addr: "1.2.3.4", User: "root", Port: 22, Key: path}
+	got, err := connKey("prod", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "prod|root|1.2.3.4|22|"+path+"#") {
 		t.Fatalf("connKey=%q", got)
 	}
 }
 
+func TestConnKeyChangesWhenPrivateKeyRotates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "key")
+	if err := os.WriteFile(path, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	host := config.Host{Addr: "1.2.3.4", User: "root", Port: 22, Key: path}
+	first, err := connKey("prod", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second, err := connKey("prod", host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second == first {
+		t.Fatal("private key rotation did not change connection identity")
+	}
+}
+
 func TestNewPoolAndEmptyStatuses(t *testing.T) {
-	p := New(config.Default())
+	p := New()
 	if len(p.Statuses()) != 0 {
 		t.Fatal("expected no statuses")
 	}
@@ -73,14 +102,15 @@ func (errReader) Read([]byte) (int, error) { return 0, io.EOF }
 
 func TestExecuteWithInProcessSSHServer(t *testing.T) {
 	fixture := newSSHFixture(t)
-	p := New(fixture.config)
+	p := New()
 
 	var stdout, stderr bytes.Buffer
 	result, err := p.Execute(context.Background(), ExecOptions{
-		HostName: "test",
-		Command:  "ok",
-		Stdout:   func(data []byte) { stdout.Write(data) },
-		Stderr:   func(data []byte) { stderr.Write(data) },
+		HostName:     "test",
+		ResolvedHost: fixture.host,
+		Command:      "ok",
+		Stdout:       func(data []byte) { stdout.Write(data) },
+		Stderr:       func(data []byte) { stderr.Write(data) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -95,7 +125,7 @@ func TestExecuteWithInProcessSSHServer(t *testing.T) {
 		t.Fatalf("statuses=%#v", p.Statuses())
 	}
 
-	result, err = p.Execute(context.Background(), ExecOptions{HostName: "test", Command: "fail"})
+	result, err = p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "fail"})
 	if err == nil {
 		t.Fatal("expected remote exit error")
 	}
@@ -110,12 +140,43 @@ func TestExecuteWithInProcessSSHServer(t *testing.T) {
 	}
 }
 
+func TestApplyConfigClosesOnlyChangedIdleConnection(t *testing.T) {
+	fixture := newSSHFixture(t)
+	p := New()
+	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged := config.Default()
+	unchanged.Hosts["test"] = fixture.host
+	p.ApplyConfig(unchanged)
+	if statuses := p.Statuses(); len(statuses) != 1 {
+		t.Fatalf("unchanged connection was closed: %#v", statuses)
+	}
+
+	changed := fixture.host
+	changed.User = "other-user"
+	cfg := config.Default()
+	cfg.Hosts["test"] = changed
+	p.ApplyConfig(cfg)
+	if statuses := p.Statuses(); len(statuses) != 0 {
+		t.Fatalf("stale idle connection was retained: %#v", statuses)
+	}
+	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: changed, Command: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+
+	statuses := p.Statuses()
+	if len(statuses) != 1 || statuses[0].User != changed.User {
+		t.Fatalf("changed host connection = %#v", statuses)
+	}
+}
+
 func TestExecuteTimeout(t *testing.T) {
 	fixture := newSSHFixture(t)
-	p := New(fixture.config)
+	p := New()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := p.Execute(ctx, ExecOptions{HostName: "test", Command: "hang"})
+	_, err := p.Execute(ctx, ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "hang"})
 	if err != ErrTimeout {
 		t.Fatalf("err=%v", err)
 	}
@@ -123,7 +184,7 @@ func TestExecuteTimeout(t *testing.T) {
 
 func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 	fixture := newSSHFixture(t)
-	p := New(fixture.config)
+	p := New()
 	remoteDir := t.TempDir()
 	remotePath := filepath.Join(remoteDir, "file.bin")
 	data := append([]byte{0, 1, 2, 255}, bytes.Repeat([]byte("payload"), 30000)...)
@@ -131,6 +192,7 @@ func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 	upload, err := p.Upload(context.Background(), UploadOptions{
 		CommandID:      "direct",
 		HostName:       "test",
+		ResolvedHost:   fixture.host,
 		RemotePath:     remotePath,
 		DisplayCommand: "cp local test:/file.bin",
 		Reader:         bytes.NewReader(data),
@@ -158,6 +220,7 @@ func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 	var ready RemoteFileInfo
 	download, err := p.Download(context.Background(), DownloadOptions{
 		HostName:       "test",
+		ResolvedHost:   fixture.host,
 		RemotePath:     remotePath,
 		DisplayCommand: "cp test:/file.bin local",
 		Writer:         &downloaded,
@@ -181,6 +244,7 @@ func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 	_, err = p.Upload(context.Background(), UploadOptions{
 		CommandID:      "atomic-rejected",
 		HostName:       "test",
+		ResolvedHost:   fixture.host,
 		RemotePath:     remotePath,
 		DisplayCommand: "cp --atomic local test:/file.bin",
 		Reader:         bytes.NewReader(data),
@@ -203,6 +267,7 @@ func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 	_, err = p.Upload(context.Background(), UploadOptions{
 		CommandID:      "atomic-ok",
 		HostName:       "test",
+		ResolvedHost:   fixture.host,
 		RemotePath:     remotePath,
 		DisplayCommand: "cp --atomic local test:/file.bin",
 		Reader:         bytes.NewReader(data),
@@ -222,8 +287,8 @@ func TestSFTPUploadDownloadAndAtomicValidation(t *testing.T) {
 
 func TestIdleCloseAndDrop(t *testing.T) {
 	fixture := newSSHFixture(t)
-	p := New(fixture.config)
-	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", Command: "ok"}); err != nil {
+	p := New()
+	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	p.mu.Lock()
@@ -238,7 +303,7 @@ func TestIdleCloseAndDrop(t *testing.T) {
 		t.Fatalf("statuses=%#v", p.Statuses())
 	}
 
-	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", Command: "ok"}); err != nil {
+	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	p.drop("test")
@@ -246,7 +311,7 @@ func TestIdleCloseAndDrop(t *testing.T) {
 		t.Fatalf("statuses after drop=%#v", p.Statuses())
 	}
 
-	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", Command: "ok"}); err != nil {
+	if _, err := p.Execute(context.Background(), ExecOptions{HostName: "test", ResolvedHost: fixture.host, Command: "ok"}); err != nil {
 		t.Fatal(err)
 	}
 	p.CloseAllIdle()
@@ -256,7 +321,7 @@ func TestIdleCloseAndDrop(t *testing.T) {
 }
 
 type sshFixture struct {
-	config *config.Config
+	host config.Host
 }
 
 func newSSHFixture(t *testing.T) sshFixture {
@@ -322,7 +387,11 @@ func newSSHFixture(t *testing.T) sshFixture {
 	cfg.Hosts["test"] = config.Host{Addr: addr, User: "tester", Port: port, Key: clientKeyPath}
 	cfg.Defaults.ConnectTimeout.Duration = time.Second
 	cfg.Defaults.CommandTimeout.Duration = time.Second
-	return sshFixture{config: cfg}
+	host, err := cfg.ResolveHost("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sshFixture{host: host}
 }
 
 func serveTestSSH(listener net.Listener, cfg *ssh.ServerConfig) {

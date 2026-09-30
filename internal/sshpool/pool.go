@@ -29,7 +29,6 @@ var (
 )
 
 type Pool struct {
-	cfg   *config.Config
 	mu    sync.Mutex
 	conns map[string]*pooledConn
 }
@@ -46,11 +45,12 @@ type pooledConn struct {
 }
 
 type ExecOptions struct {
-	CommandID string
-	HostName  string
-	Command   string
-	Stdout    func([]byte)
-	Stderr    func([]byte)
+	CommandID    string
+	HostName     string
+	ResolvedHost config.Host
+	Command      string
+	Stdout       func([]byte)
+	Stderr       func([]byte)
 }
 
 type ExecResult struct {
@@ -61,6 +61,7 @@ type ExecResult struct {
 type UploadOptions struct {
 	CommandID      string
 	HostName       string
+	ResolvedHost   config.Host
 	RemotePath     string
 	DisplayCommand string
 	Reader         io.Reader
@@ -72,6 +73,7 @@ type UploadOptions struct {
 
 type DownloadOptions struct {
 	HostName       string
+	ResolvedHost   config.Host
 	RemotePath     string
 	DisplayCommand string
 	Writer         io.Writer
@@ -91,12 +93,12 @@ type TransferResult struct {
 	Connection model.ConnectionStatus
 }
 
-func New(cfg *config.Config) *Pool {
-	return &Pool{cfg: cfg, conns: map[string]*pooledConn{}}
+func New() *Pool {
+	return &Pool{conns: map[string]*pooledConn{}}
 }
 
 func (p *Pool) Execute(ctx context.Context, opts ExecOptions) (ExecResult, error) {
-	pc, err := p.get(ctx, opts.HostName)
+	pc, err := p.get(ctx, opts.HostName, opts.ResolvedHost)
 	if err != nil {
 		return ExecResult{}, err
 	}
@@ -181,7 +183,7 @@ func (p *Pool) Execute(ctx context.Context, opts ExecOptions) (ExecResult, error
 }
 
 func (p *Pool) Upload(ctx context.Context, opts UploadOptions) (TransferResult, error) {
-	pc, client, release, err := p.openSFTP(ctx, opts.HostName, opts.DisplayCommand)
+	pc, client, release, err := p.openSFTP(ctx, opts.HostName, opts.ResolvedHost, opts.DisplayCommand)
 	if err != nil {
 		return TransferResult{}, err
 	}
@@ -265,7 +267,7 @@ func (p *Pool) Upload(ctx context.Context, opts UploadOptions) (TransferResult, 
 }
 
 func (p *Pool) Download(ctx context.Context, opts DownloadOptions) (TransferResult, error) {
-	pc, client, release, err := p.openSFTP(ctx, opts.HostName, opts.DisplayCommand)
+	pc, client, release, err := p.openSFTP(ctx, opts.HostName, opts.ResolvedHost, opts.DisplayCommand)
 	if err != nil {
 		return TransferResult{}, err
 	}
@@ -307,8 +309,8 @@ func (p *Pool) Download(ctx context.Context, opts DownloadOptions) (TransferResu
 	}, nil
 }
 
-func (p *Pool) openSFTP(ctx context.Context, hostName, displayCommand string) (*pooledConn, *sftp.Client, func(), error) {
-	pc, err := p.get(ctx, hostName)
+func (p *Pool) openSFTP(ctx context.Context, hostName string, host config.Host, displayCommand string) (*pooledConn, *sftp.Client, func(), error) {
+	pc, err := p.get(ctx, hostName, host)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -473,12 +475,40 @@ func (p *Pool) CloseHostIdle(hostName string) bool {
 	return closed
 }
 
-func (p *Pool) get(ctx context.Context, hostName string) (*pooledConn, error) {
-	host, err := p.cfg.ResolveHost(hostName)
+func (p *Pool) ApplyConfig(cfg *config.Config) {
+	if cfg == nil {
+		return
+	}
+	var clients []*ssh.Client
+	p.mu.Lock()
+	for key, pc := range p.conns {
+		host, err := cfg.ResolveHost(pc.hostName)
+		if err == nil {
+			var desired string
+			desired, err = connKey(pc.hostName, host)
+			if err == nil && desired == key {
+				continue
+			}
+		}
+		pc.mu.Lock()
+		open := pc.openSessions
+		pc.mu.Unlock()
+		if open == 0 {
+			clients = append(clients, pc.client)
+			delete(p.conns, key)
+		}
+	}
+	p.mu.Unlock()
+	for _, client := range clients {
+		_ = client.Close()
+	}
+}
+
+func (p *Pool) get(ctx context.Context, hostName string, host config.Host) (*pooledConn, error) {
+	key, keyData, err := connectionIdentity(hostName, host)
 	if err != nil {
 		return nil, err
 	}
-	key := connKey(hostName, host)
 
 	p.mu.Lock()
 	if pc := p.conns[key]; pc != nil {
@@ -487,7 +517,7 @@ func (p *Pool) get(ctx context.Context, hostName string) (*pooledConn, error) {
 	}
 	p.mu.Unlock()
 
-	client, err := dial(ctx, host)
+	client, err := dial(ctx, host, keyData)
 	if err != nil {
 		return nil, err
 	}
@@ -515,11 +545,7 @@ func (p *Pool) drop(hostName string) {
 	}
 }
 
-func dial(ctx context.Context, host config.Host) (*ssh.Client, error) {
-	keyData, err := os.ReadFile(host.Key)
-	if err != nil {
-		return nil, fmt.Errorf("read ssh key %s: %w", host.Key, err)
-	}
+func dial(ctx context.Context, host config.Host, keyData []byte) (*ssh.Client, error) {
 	signer, err := ssh.ParsePrivateKey(keyData)
 	if err != nil {
 		return nil, fmt.Errorf("parse ssh key %s: %w; encrypted keys are not supported in MVP", host.Key, err)
@@ -532,19 +558,23 @@ func dial(ctx context.Context, host config.Host) (*ssh.Client, error) {
 		User:            host.User,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: hostKeyCallback,
-		Timeout:         0,
+		Timeout:         host.ConnectTimeout,
 	}
 	addr := fmt.Sprintf("%s:%d", host.Addr, host.Port)
-	dialer := net.Dialer{}
+	dialer := net.Dialer{Timeout: host.ConnectTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
+	}
+	if host.ConnectTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(host.ConnectTimeout))
 	}
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
+	_ = conn.SetDeadline(time.Time{})
 	return ssh.NewClient(c, chans, reqs), nil
 }
 
@@ -561,8 +591,19 @@ func knownHostCallback() (ssh.HostKeyCallback, error) {
 	return callback, nil
 }
 
-func connKey(name string, host config.Host) string {
-	return fmt.Sprintf("%s|%s|%s|%d|%s", name, host.User, host.Addr, host.Port, host.Key)
+func connKey(name string, host config.Host) (string, error) {
+	key, _, err := connectionIdentity(name, host)
+	return key, err
+}
+
+func connectionIdentity(name string, host config.Host) (string, []byte, error) {
+	data, err := os.ReadFile(host.Key)
+	if err != nil {
+		return "", nil, fmt.Errorf("read ssh key %s: %w", host.Key, err)
+	}
+	digest := sha256.Sum256(data)
+	keyIdentity := host.Key + "#" + hex.EncodeToString(digest[:])
+	return fmt.Sprintf("%s|%s|%s|%d|%s", name, host.User, host.Addr, host.Port, keyIdentity), data, nil
 }
 
 func copyChunks(wg *sync.WaitGroup, r io.Reader, emit func([]byte)) {

@@ -161,14 +161,14 @@ func TestHeaderFooterAndContent(t *testing.T) {
 	a.commands["r"] = model.CommandRecord{ID: "r", Status: model.StatusRunning, Risk: model.RiskLow}
 	a.commands["f"] = model.CommandRecord{ID: "f", Status: model.StatusFailed, Risk: model.RiskMedium}
 	header := a.header()
-	if !strings.Contains(header, "pending=1") || !strings.Contains(header, "running=1") || !strings.Contains(header, "attention=1") {
+	if !strings.Contains(header, "Review 1") || !strings.Contains(header, "Running 1") || !strings.Contains(header, "Attention 1") {
 		t.Fatalf("header=%q", header)
 	}
 	if !strings.Contains(a.footer(), "approve") {
 		t.Fatalf("footer=%q", a.footer())
 	}
 	a.help = true
-	if !strings.Contains(a.content(), "agent-ssh keys") {
+	if !strings.Contains(a.content(), "Keyboard Help") {
 		t.Fatalf("help content=%q", a.content())
 	}
 	a.help = false
@@ -190,7 +190,7 @@ func TestUpdateKeyAndViewFlow(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("window update returned command")
 	}
-	if a.width != 132 || a.viewport.Height != 36 {
+	if a.width != 132 || a.viewport.Height >= 40 || a.viewport.Height < 35 {
 		t.Fatalf("size not applied: width=%d viewport=%d", a.width, a.viewport.Height)
 	}
 
@@ -218,13 +218,13 @@ func TestUpdateKeyAndViewFlow(t *testing.T) {
 	a = modelAfter.(app)
 	modelAfter, _ = a.Update(key("d"))
 	a = modelAfter.(app)
-	if a.filter != "prod" {
-		t.Fatalf("filter=%q", a.filter)
+	if a.filterDraft != "prod" || a.filter != "" {
+		t.Fatalf("filter draft=%q applied=%q", a.filterDraft, a.filter)
 	}
 	modelAfter, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	a = modelAfter.(app)
-	if a.inputMode != inputNone {
-		t.Fatal("filter input did not finish")
+	if a.inputMode != inputNone || a.filter != "prod" {
+		t.Fatalf("filter input did not finish: mode=%d filter=%q", a.inputMode, a.filter)
 	}
 	view := a.View()
 	if !strings.Contains(view, "agent-ssh") || !strings.Contains(view, "restart") {
@@ -246,14 +246,17 @@ func TestHandleConfirmKey(t *testing.T) {
 	if cmd := a.handleConfirmKey(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
 		t.Fatal("ctrl+c should quit while confirmation is sending")
 	}
-	a.apply(protocol.Message{Type: "ui.error", Error: "try again"})
-	if a.confirm == nil || a.confirm.sending || a.message != "try again" {
+	a.requestSeq = 1
+	modelAfter, _ := a.Update(requestResult{requestID: 1, err: errors.New("try again")})
+	a = modelAfter.(app)
+	if a.confirm == nil || a.confirm.sending || !strings.Contains(a.message, "try again") {
 		t.Fatalf("failed confirmation was not retained: confirm=%#v msg=%q", a.confirm, a.message)
 	}
 	if cmd := a.handleConfirmKey(key("enter")); cmd == nil {
 		t.Fatal("confirmation retry did not create command")
 	}
-	a.apply(protocol.Message{Type: "ack", OK: true})
+	modelAfter, _ = a.Update(requestResult{requestID: a.requestSeq, message: protocol.Message{Type: "ack", OK: true}})
+	a = modelAfter.(app)
 	if a.confirm != nil {
 		t.Fatalf("successful confirmation was not closed: %#v", a.confirm)
 	}
@@ -271,6 +274,7 @@ func TestApprovalConfirmationRisksAndDirectReject(t *testing.T) {
 	if cmd := a.decide("approve"); cmd == nil || a.confirm != nil {
 		t.Fatalf("unconfigured risk should approve directly: cmd=%v confirm=%#v", cmd, a.confirm)
 	}
+	a.busy = false
 	if cmd := a.decide("reject"); cmd == nil || a.confirm != nil {
 		t.Fatalf("reject should not require confirmation: cmd=%v confirm=%#v", cmd, a.confirm)
 	}
@@ -301,15 +305,19 @@ func TestConnectionActionsAndStyles(t *testing.T) {
 	if cmd := a.closeSelectedConnection(); cmd == nil {
 		t.Fatal("expected close command")
 	}
+	a.busy = false
 	if cmd := a.closeIdleConnections(); cmd == nil {
 		t.Fatal("expected close idle command")
 	}
+	a.busy = false
 	if cmd := a.togglePause(); cmd == nil {
 		t.Fatal("expected pause command")
 	}
+	a.busy = false
 	if cmd := a.emergencyStop(); cmd == nil {
 		t.Fatal("expected emergency command")
 	}
+	a.busy = false
 	if cmd := a.cycleMode(); cmd == nil {
 		t.Fatal("expected mode command")
 	}
@@ -321,6 +329,207 @@ func TestConnectionActionsAndStyles(t *testing.T) {
 	}
 	for _, mode := range []string{config.ModeAuto, config.ModeApproval, config.ModeSensitive} {
 		_ = a.styles.mode(mode).Render("x")
+	}
+}
+
+func TestSelectionFollowsCommandIdentity(t *testing.T) {
+	a := newTestApp()
+	now := time.Now()
+	a.commands["medium"] = model.CommandRecord{ID: "medium", CreatedAt: now, Status: model.StatusPendingApproval, Risk: model.RiskMedium}
+	a.restoreSelection()
+	if a.selectedID != "medium" {
+		t.Fatalf("selected ID = %q", a.selectedID)
+	}
+	a.commands["critical"] = model.CommandRecord{ID: "critical", CreatedAt: now.Add(time.Second), Status: model.StatusPendingApproval, Risk: model.RiskCritical}
+	a.restoreSelection()
+	rec, ok := a.selectedCommand()
+	if !ok || rec.ID != "medium" || a.selected != 1 {
+		t.Fatalf("selection changed target: rec=%#v index=%d", rec, a.selected)
+	}
+}
+
+func TestActionsArePageScoped(t *testing.T) {
+	a := newTestApp()
+	a.commands["cmd"] = model.CommandRecord{ID: "cmd", Status: model.StatusPendingApproval, Risk: model.RiskLow}
+	a.page = pageConnections
+	a.connections = []model.ConnectionStatus{{Host: "host"}}
+	if cmd := a.handleKey(key("a")); cmd != nil || a.busy {
+		t.Fatal("approve must be disabled outside Review")
+	}
+	if cmd := a.handleKey(key("x")); cmd != nil || a.confirm != nil {
+		t.Fatal("cancel must not target invisible command on Connections")
+	}
+}
+
+func TestUnicodeFilterEditingAndCancel(t *testing.T) {
+	a := newTestApp()
+	a.filter = "old"
+	a.filterDraft = "主机"
+	a.inputMode = inputFilter
+	a.handleFilterKey(tea.KeyMsg{Type: tea.KeyBackspace})
+	if a.filterDraft != "主" {
+		t.Fatalf("backspace left invalid filter %q", a.filterDraft)
+	}
+	a.handleFilterKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if a.filter != "old" {
+		t.Fatalf("escape changed filter to %q", a.filter)
+	}
+}
+
+func TestSafeTextAndResponsiveTables(t *testing.T) {
+	if got := safeText("ok\rspoof\x1b]52;c;secret\x07\x1b[2Jdone2J"); got != "okspoofdone2J" {
+		t.Fatalf("safe text = %q", got)
+	}
+	for _, width := range []int{40, 60, 80, 120} {
+		for _, widths := range [][]int{commandTableWidths(width), connectionTableWidths(width), policyTableWidths(width)} {
+			total := len(widths) - 1
+			for _, columnWidth := range widths {
+				total += columnWidth
+			}
+			if total > width {
+				t.Fatalf("columns total %d exceeds width %d: %#v", total, width, widths)
+			}
+		}
+	}
+}
+
+func TestDetailAndConfirmationAreFocused(t *testing.T) {
+	a := newTestApp()
+	a.width = 80
+	a.height = 24
+	a.resizeViewport()
+	a.commands["cmd"] = model.CommandRecord{ID: "cmd", Host: "prod", Command: "printf '\x1b[2J'", DisplayCommand: "restart service", Status: model.StatusPendingApproval, Risk: model.RiskHigh}
+	a.restoreSelection()
+	a.handleKey(key("enter"))
+	if !a.detail || !strings.Contains(a.content(), "Command Detail") || strings.Contains(a.content(), "\x1b[2J") {
+		t.Fatalf("detail state/content invalid: %q", a.content())
+	}
+	a.detail = false
+	a.confirmApproval(a.commands["cmd"])
+	content := a.content()
+	if !strings.Contains(content, "APPROVE COMMAND?") || strings.Contains(content, "Pending Review") {
+		t.Fatalf("confirmation is not focused: %q", content)
+	}
+}
+
+func TestFilteredReviewEmptyStateIsHonest(t *testing.T) {
+	a := newTestApp()
+	a.commands["cmd"] = model.CommandRecord{ID: "cmd", Host: "prod", Status: model.StatusPendingApproval, Risk: model.RiskHigh}
+	a.filter = "dev"
+	view := a.reviewView()
+	if !strings.Contains(view, "hidden by filter") || strings.Contains(view, "queue is clear") {
+		t.Fatalf("filtered state = %q", view)
+	}
+}
+
+func TestPendingTransitionFocusesReview(t *testing.T) {
+	a := newTestApp()
+	a.focusPending = true
+	a.page = pageActivity
+	a.filter = "hidden"
+	a.filterDraft = "hidden"
+	rec := model.CommandRecord{ID: "cmd", Status: model.StatusCreated, Risk: model.RiskHigh}
+	a.apply(protocol.Message{Type: "command.created", Record: &rec})
+	rec.Status = model.StatusPendingApproval
+	a.apply(protocol.Message{Type: "command.pending", Record: &rec})
+	if a.page != pageReview || a.selectedID != "cmd" || a.filter != "" || a.filterDraft != "" {
+		t.Fatalf("pending transition did not focus visible review: page=%d selected=%q filter=%q", a.page, a.selectedID, a.filter)
+	}
+}
+
+func TestConfigReloadEventsRefreshTUISettings(t *testing.T) {
+	a := newTestApp()
+	settings := &protocol.RuntimeSettings{
+		Generation:          2,
+		Mode:                config.ModeAuto,
+		PolicyDefaultAction: "allow",
+		BuiltinRules:        true,
+		AuditStoreOutput:    "summary",
+		AuditRetentionDays:  7,
+		RedactSecrets:       true,
+		ConfirmRisks:        []string{"low"},
+		Theme:               "light",
+		FocusPending:        false,
+		BellOnPending:       true,
+	}
+	cmd := a.apply(protocol.Message{Type: "config.reloaded", Mode: config.ModeAuto, RuntimeSettings: settings})
+	if cmd == nil || !a.refreshing || a.mode != config.ModeAuto || a.theme != "light" || a.focusPending || !a.bellPending {
+		t.Fatalf("config reload not applied: cmd=%v mode=%s theme=%s focus=%v bell=%v", cmd, a.mode, a.theme, a.focusPending, a.bellPending)
+	}
+	if _, ok := a.confirmRisk[model.RiskLow]; !ok || len(a.confirmRisk) != 1 {
+		t.Fatalf("confirm risks=%#v", a.confirmRisk)
+	}
+	recovered := *settings
+	recovered.ConfirmRisks = []string{}
+	recovered.Theme = "dark"
+	recovered.Generation = 1
+	a.applyRefreshSnapshot(protocol.Message{RuntimeSettings: &recovered})
+	if len(a.confirmRisk) != 1 || a.theme != "light" {
+		t.Fatalf("older snapshot rolled settings back: risks=%#v theme=%s", a.confirmRisk, a.theme)
+	}
+	recovered.Generation = 3
+	a.applyRefreshSnapshot(protocol.Message{RuntimeSettings: &recovered})
+	if len(a.confirmRisk) != 0 || a.theme != "dark" {
+		t.Fatalf("newer snapshot settings not applied: risks=%#v theme=%s", a.confirmRisk, a.theme)
+	}
+
+	a.apply(protocol.Message{Type: "config.reload_failed", Error: "bad yaml"})
+	if !strings.Contains(a.message, "bad yaml") {
+		t.Fatalf("reload failure message=%q", a.message)
+	}
+}
+
+func TestBusyRequestBlocksNewConfirmation(t *testing.T) {
+	a := newTestApp()
+	a.busy = true
+	if cmd := a.handleKey(key("!")); cmd != nil || a.confirm != nil {
+		t.Fatalf("busy request opened confirmation: cmd=%v confirm=%#v", cmd, a.confirm)
+	}
+	if !strings.Contains(a.message, "wait") {
+		t.Fatalf("missing busy feedback: %q", a.message)
+	}
+}
+
+func TestRevisionGapTriggersRefresh(t *testing.T) {
+	a := newTestApp()
+	a.lastRevision = 4
+	cmd := a.apply(protocol.Message{Type: "daemon.paused", Revision: 6, Paused: true})
+	if cmd == nil || a.streamHealthy || !a.paused || !strings.Contains(a.message, "gap") {
+		t.Fatalf("gap recovery not started: cmd=%v healthy=%v paused=%v message=%q", cmd, a.streamHealthy, a.paused, a.message)
+	}
+}
+
+func TestRefreshSnapshotPreservesNewerCommandState(t *testing.T) {
+	a := newTestApp()
+	a.streamHealthy = false
+	a.streamAlive = false
+	a.commands["cmd"] = model.CommandRecord{ID: "cmd", Status: model.StatusDone}
+	a.applyRefreshSnapshot(protocol.Message{
+		Type:        "snapshot",
+		Commands:    []model.CommandRecord{{ID: "cmd", Status: model.StatusRunning}, {ID: "history", Status: model.StatusDone}},
+		Connections: []model.ConnectionStatus{{Host: "host"}},
+	})
+	if a.commands["cmd"].Status != model.StatusDone || a.commands["history"].Status != model.StatusDone {
+		t.Fatalf("refresh replaced newer state: %#v", a.commands)
+	}
+	if a.streamHealthy {
+		t.Fatal("refresh snapshot marked disconnected stream live")
+	}
+	if len(a.connections) != 1 {
+		t.Fatalf("connections not refreshed: %#v", a.connections)
+	}
+}
+
+func TestViewportScrollSynchronizesContent(t *testing.T) {
+	a := newTestApp()
+	a.width = 80
+	a.height = 12
+	a.resizeViewport()
+	a.help = true
+	before := a.viewport.YOffset
+	a.handleKey(key("pgdown"))
+	if a.viewport.YOffset <= before {
+		t.Fatalf("viewport did not scroll: before=%d after=%d", before, a.viewport.YOffset)
 	}
 }
 
@@ -339,29 +548,24 @@ func TestWaitDaemonCommands(t *testing.T) {
 	}
 }
 
-func TestRequestCmdSuccessAndError(t *testing.T) {
+func TestRequestWithTimeout(t *testing.T) {
 	orig := requestFn
 	t.Cleanup(func() { requestFn = orig })
 	requestFn = func(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Fatal("request context has no deadline")
+		}
 		return protocol.Message{Type: "ack", OK: true, ID: msg.ID}, nil
 	}
-	got := requestCmd(protocol.Message{Type: "x", ID: "cmd"})()
-	if msg := protocol.Message(got.(daemonMsg)); !msg.OK || msg.ID != "cmd" {
-		t.Fatalf("success msg=%#v", msg)
+	got, err := requestWithTimeout(protocol.Message{Type: "x", ID: "cmd"})
+	if err != nil || !got.OK || got.ID != "cmd" {
+		t.Fatalf("response=%#v err=%v", got, err)
 	}
 	requestFn = func(context.Context, protocol.Message) (protocol.Message, error) {
 		return protocol.Message{}, errors.New("bad")
 	}
-	got = requestCmd(protocol.Message{Type: "x"})()
-	if msg := protocol.Message(got.(daemonMsg)); msg.Type != "ui.error" || msg.Error != "bad" {
-		t.Fatalf("error msg=%#v", msg)
-	}
-	requestFn = func(context.Context, protocol.Message) (protocol.Message, error) {
-		return protocol.Message{OK: false, Error: "no"}, nil
-	}
-	got = requestCmd(protocol.Message{Type: "x"})()
-	if msg := protocol.Message(got.(daemonMsg)); msg.Type != "ui.error" || msg.Error != "no" {
-		t.Fatalf("ack error msg=%#v", msg)
+	if _, err := requestWithTimeout(protocol.Message{Type: "x"}); err == nil || err.Error() != "bad" {
+		t.Fatalf("error=%v", err)
 	}
 }
 
@@ -405,15 +609,18 @@ func TestHandleKeyBranches(t *testing.T) {
 	a.commands["cmd"] = model.CommandRecord{ID: "cmd", Status: model.StatusPendingApproval, Risk: model.RiskHigh, Host: "h", Command: "restart"}
 	for _, k := range []string{"1", "2", "3", "4", "5", "j", "down", "k", "up", "?", "a", "esc", "r", "esc", "x", "esc", "!", "esc", "m", "esc"} {
 		_ = a.handleKey(key(k))
+		a.busy = false
 	}
 	a.page = pageConnections
 	a.connections = []model.ConnectionStatus{{Host: "h"}}
 	if cmd := a.handleKey(key("d")); cmd == nil {
 		t.Fatal("d should return command")
 	}
-	if cmd := a.handleKey(key("D")); cmd == nil {
-		t.Fatal("D should return command")
+	a.busy = false
+	if cmd := a.handleKey(key("D")); cmd != nil || a.confirm == nil {
+		t.Fatal("D should open confirmation")
 	}
+	a.confirm = nil
 	if cmd := a.handleKey(key("p")); cmd == nil {
 		t.Fatal("p should return command")
 	}
@@ -436,6 +643,8 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyEsc}
 	case "enter":
 		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
 	}
 	if len(s) == 1 {
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}

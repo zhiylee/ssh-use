@@ -39,6 +39,21 @@ func TestJSONLinesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestRuntimeSettingsRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	want := &RuntimeSettings{Generation: 7, Mode: "auto", ConfirmRisks: []string{}, Theme: "dark", FocusPending: true}
+	if err := NewEncoder(&buf).Encode(Message{Type: "snapshot", RuntimeSettings: want}); err != nil {
+		t.Fatal(err)
+	}
+	var got Message
+	if err := NewDecoder(&buf).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RuntimeSettings == nil || got.RuntimeSettings.Generation != 7 || got.RuntimeSettings.Mode != "auto" || got.RuntimeSettings.ConfirmRisks == nil || len(got.RuntimeSettings.ConfirmRisks) != 0 {
+		t.Fatalf("runtime settings = %#v", got.RuntimeSettings)
+	}
+}
+
 func TestDecodePlainData(t *testing.T) {
 	got, err := DecodeData(Message{Data: "plain"})
 	if err != nil {

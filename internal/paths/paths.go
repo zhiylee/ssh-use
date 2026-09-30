@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func RuntimeDir() string {
@@ -13,7 +14,17 @@ func RuntimeDir() string {
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		return filepath.Join(dir, "agent-ssh")
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("agent-ssh-%d", os.Getuid()))
+	uid := os.Getuid()
+	userRuntime := filepath.Join("/run/user", strconv.Itoa(uid))
+	info, err := os.Stat(userRuntime)
+	return fallbackRuntimeDir(uid, os.TempDir(), err == nil && info.IsDir())
+}
+
+func fallbackRuntimeDir(uid int, tempDir string, hasUserRuntime bool) string {
+	if hasUserRuntime {
+		return filepath.Join("/run/user", strconv.Itoa(uid), "agent-ssh")
+	}
+	return filepath.Join(tempDir, fmt.Sprintf("agent-ssh-%d", uid))
 }
 
 func SocketPath() string {
