@@ -2,3 +2,8 @@
 /ssh-use
 *.test
 coverage.out
+
+# Deployment credentials and persistent state
+.env
+/deploy/state/
+/ssh-use-server/

@@ -1,0 +1,21 @@
+defaults:
+  user: deploy
+  port: 22
+  key: /home/ssh-use/.ssh/id_ed25519_ssh_use
+  idle_timeout: 10m
+  connect_timeout: 10s
+  command_timeout: 5m
+
+hosts: {}
+
+policy:
+  mode: sensitive
+  default_action: allow
+  builtin_rules: true
+
+audit:
+  enabled: true
+  store_output: summary
+  max_output_bytes: 262144
+  retention_days: 14
+  redact_secrets: true

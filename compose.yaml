@@ -1,0 +1,65 @@
+x-runtime: &runtime
+  image: ${SSH_USE_IMAGE:-ssh-use:local}
+  user: "${SSH_USE_UID:-10001}:${SSH_USE_GID:-10001}"
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=16m
+
+services:
+  ssh-use:
+    <<: *runtime
+    build:
+      context: .
+    command: ["server", "--dir", "/run/ssh-use-server", "--listen", "0.0.0.0:7443"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "${SSH_USE_BIND_ADDR:-127.0.0.1}:${SSH_USE_PORT:-7443}:7443/tcp"
+    volumes:
+      # Directory mounts preserve visibility of atomic config/auth replacements.
+      - type: bind
+        source: ./deploy/state/config
+        target: /etc/ssh-use
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/state/data
+        target: /var/lib/ssh-use
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/state/server
+        target: /run/ssh-use-server
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./deploy/state/ssh
+        target: /home/ssh-use/.ssh
+        read_only: true
+        bind:
+          create_host_path: false
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Explicitly run this offline helper for bootstrap and credential management.
+  admin:
+    <<: *runtime
+    profiles: ["tools"]
+    pull_policy: never
+    network_mode: none
+    command: ["help"]
+    volumes:
+      - type: bind
+        source: ./deploy/state
+        target: /bootstrap
+        bind:
+          create_host_path: false

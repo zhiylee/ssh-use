@@ -2,6 +2,8 @@
 
 `ssh-use` 是一个面向 AI agent 的远程命令执行工具。
 
+当前已支持可选的集中服务端模式、gRPC / Protobuf / TLS 远程通信、每次 RPC 的 token 认证、跨设备 TUI 审批，以及 `hosts` 增删改查命令。部署方式和实际行为以 [README](README.md) 为准；下文保留最初的本地 daemon 设计背景。
+
 GitHub 仓库：<https://github.com/zhiylee/ssh-use>。
 
 安装 CLI：
@@ -14,7 +16,7 @@ go install github.com/zhiylee/ssh-use/cmd/ssh-use@latest
 
 ## 从 agent-ssh 迁移
 
-项目、CLI 和未来的 Skill 统一使用 `ssh-use`。升级前停止旧 daemon，再迁移已有配置和审计库：
+项目、CLI 和正式 Agent Skill 统一使用 `ssh-use`。升级前停止旧 daemon，再迁移已有配置和审计库：
 
 - 配置文件：`~/.config/agent-ssh/config.yaml` -> `~/.config/ssh-use/config.yaml`。
 - 审计数据库：`~/.local/share/agent-ssh/agent-ssh.db` -> `~/.local/share/ssh-use/ssh-use.db`。首次打开会自动迁移旧错误码列，保留历史记录。
@@ -33,6 +35,8 @@ go install github.com/zhiylee/ssh-use/cmd/ssh-use@latest
 - 支持流式返回 stdout/stderr，避免长命令看起来像卡死。
 - 支持用户在 TUI 中取消命令、暂停新命令、紧急停止异常执行流。
 - 支持 SQLite 本地审计。
+- 支持 TLS 服务端统一执行和审计，客户端可从多台机器接入。
+- 支持 `hosts list/get/add/update/delete` 管理当前执行端的服务器清单。
 - 支持空闲连接自动断开，下次命令自动重连。
 - 不做 Web UI，所有用户交互都在终端 TUI 内完成。
 
@@ -56,7 +60,7 @@ ssh-use exec <host> -- <command>
 ssh-use cp [--atomic] <source> <destination>
 ```
 
-用户只使用：
+用户审批使用：
 
 ```bash
 ssh-use tui

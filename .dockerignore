@@ -1,0 +1,12 @@
+# Only source required to build the binary enters the build context.
+**
+!Dockerfile
+!.dockerignore
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!skills/
+!skills/**
