@@ -62,12 +62,12 @@ type DefaultsConfig struct {
 }
 
 type Host struct {
-	Addr           string        `yaml:"addr"`
-	User           string        `yaml:"user"`
-	Port           int           `yaml:"port"`
-	Key            string        `yaml:"key"`
-	Tags           []string      `yaml:"tags"`
-	ConnectTimeout time.Duration `yaml:"-"`
+	Addr           string        `yaml:"addr" json:"addr"`
+	User           string        `yaml:"user" json:"user"`
+	Port           int           `yaml:"port" json:"port"`
+	Key            string        `yaml:"key" json:"key"`
+	Tags           []string      `yaml:"tags" json:"tags"`
+	ConnectTimeout time.Duration `yaml:"-" json:"-"`
 }
 
 type PolicyConfig struct {

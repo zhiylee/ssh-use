@@ -6,6 +6,7 @@ type Status string
 
 const (
 	StatusCreated         Status = "CREATED"
+	StatusUnknown         Status = "UNKNOWN"
 	StatusPaused          Status = "PAUSED"
 	StatusPendingApproval Status = "PENDING_APPROVAL"
 	StatusApproved        Status = "APPROVED"

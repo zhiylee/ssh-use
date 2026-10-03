@@ -249,6 +249,7 @@ func RunCopy(args []string) int {
 					fmt.Fprintln(stderr, "ssh-use: local destination may be incomplete")
 				}
 			}
+			writeResultDiagnostic(msg.ID, 0, msg.SSHUseErrorCode)
 			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		case "error":
 			if sink != nil {
@@ -257,6 +258,7 @@ func RunCopy(args []string) int {
 			if msg.Error != "" {
 				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
+			writeResultDiagnostic(msg.ID, 0, msg.SSHUseErrorCode)
 			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		}
 	}
@@ -348,7 +350,7 @@ func parseCopyEndpoint(value string) (copyEndpoint, error) {
 
 func streamUpload(enc *protocol.Encoder, id string, source io.Reader) error {
 	hasher := sha256.New()
-	buffer := make([]byte, 128*1024)
+	buffer := make([]byte, protocol.ChunkSize)
 	var seq, total int64
 	for {
 		n, readErr := source.Read(buffer)

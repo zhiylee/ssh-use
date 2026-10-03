@@ -174,7 +174,7 @@ func TestRunCopyUpload(t *testing.T) {
 	var out, errOut bytes.Buffer
 	restore := stubCLI(t, &out, &errOut)
 	defer restore()
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go serveUploadProtocol(t, serverConn, data)
 		return clientConn, nil
@@ -192,7 +192,7 @@ func TestRunCopyDownload(t *testing.T) {
 	var out, errOut bytes.Buffer
 	restore := stubCLI(t, &out, &errOut)
 	defer restore()
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go serveDownloadProtocol(t, serverConn, data)
 		return clientConn, nil
@@ -209,7 +209,7 @@ func TestRunCopyDownloadToStdout(t *testing.T) {
 	var out, errOut bytes.Buffer
 	restore := stubCLI(t, &out, &errOut)
 	defer restore()
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go serveDownloadProtocol(t, serverConn, data)
 		return clientConn, nil
@@ -220,6 +220,42 @@ func TestRunCopyDownloadToStdout(t *testing.T) {
 	}
 	if !bytes.Equal(out.Bytes(), data) {
 		t.Fatalf("stdout=%v want=%v", out.Bytes(), data)
+	}
+}
+
+func TestRunCopyRefusalReportsOriginAndPreservesDestination(t *testing.T) {
+	for _, messageType := range []string{"final", "error"} {
+		t.Run(messageType, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			defer stubCLI(t, &out, &errOut)()
+			destination := filepath.Join(t.TempDir(), "existing.bin")
+			if err := os.WriteFile(destination, []byte("original"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			connectFn = func() (protocol.Connection, error) {
+				clientConn, serverConn := net.Pipe()
+				go func() {
+					defer serverConn.Close()
+					var request protocol.Message
+					if err := protocol.NewDecoder(serverConn).Decode(&request); err != nil {
+						t.Error(err)
+						return
+					}
+					_ = protocol.NewEncoder(serverConn).Encode(protocol.Message{Type: messageType, ID: "copy-denied", Error: "refused", SSHUseErrorCode: "approval_rejected"})
+				}()
+				return clientConn, nil
+			}
+			if code := RunCopy([]string{"--atomic", "prod:/remote/file", destination}); code != 126 {
+				t.Fatalf("copy: code=%d stderr=%s", code, errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "ssh_use_error_code=approval_rejected job_id=copy-denied") || out.Len() != 0 {
+				t.Fatalf("failure origin: stdout=%s stderr=%s", out.String(), errOut.String())
+			}
+			data, err := os.ReadFile(destination)
+			if err != nil || string(data) != "original" {
+				t.Fatalf("refused copy modified destination: %q %v", data, err)
+			}
+		})
 	}
 }
 

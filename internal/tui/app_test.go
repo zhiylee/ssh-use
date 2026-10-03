@@ -572,7 +572,7 @@ func TestRequestWithTimeout(t *testing.T) {
 func TestNewSubscription(t *testing.T) {
 	orig := connectFn
 	t.Cleanup(func() { connectFn = orig })
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go func() {
 			dec := protocol.NewDecoder(serverConn)

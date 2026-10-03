@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -21,7 +22,6 @@ import (
 	"github.com/zhiylee/ssh-use/internal/client"
 	"github.com/zhiylee/ssh-use/internal/config"
 	"github.com/zhiylee/ssh-use/internal/model"
-	"github.com/zhiylee/ssh-use/internal/paths"
 	"github.com/zhiylee/ssh-use/internal/protocol"
 )
 
@@ -125,7 +125,11 @@ func Run(args []string) int {
 			return 2
 		}
 	}
-	cfg, err := config.Load()
+	cfg := config.Default()
+	var err error
+	if !client.IsRemote() {
+		cfg, err = config.Load()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ssh-use: %v\n", err)
 		return 1
@@ -194,19 +198,27 @@ func newSubscription() (*subscription, error) {
 		conn.Close()
 		return nil, fmt.Errorf("subscribe events: %w", err)
 	}
+	closer := &subscriptionConnection{Connection: conn, done: make(chan struct{})}
 	msgCh := make(chan protocol.Message, 100)
 	errCh := make(chan error, 1)
 	go func() {
 		for {
 			var msg protocol.Message
 			if err := dec.Decode(&msg); err != nil {
-				errCh <- err
+				select {
+				case errCh <- err:
+				case <-closer.done:
+				}
 				return
 			}
-			msgCh <- msg
+			select {
+			case msgCh <- msg:
+			case <-closer.done:
+				return
+			}
 		}
 	}()
-	return &subscription{conn: conn, ch: msgCh, err: errCh}, nil
+	return &subscription{conn: closer, ch: msgCh, err: errCh}, nil
 }
 
 func (a app) Init() tea.Cmd {
@@ -586,7 +598,27 @@ func (a *app) applyRuntimeSettings(settings *protocol.RuntimeSettings) {
 
 func (a *app) apply(msg protocol.Message) tea.Cmd {
 	var recovery tea.Cmd
-	if msg.Revision > 0 {
+	if msg.Type == "stream.reconnecting" {
+		a.streamAlive = false
+		a.streamHealthy = false
+		a.message = "live updates disconnected — reconnecting"
+		return nil
+	}
+	if msg.Type == "stream.connected" {
+		a.streamAlive = true
+		a.streamHealthy = true
+		a.message = "live updates reconnected"
+		return nil
+	}
+	if msg.Type == "heartbeat" {
+		return nil
+	}
+	if msg.Type == "snapshot" {
+		a.lastRevision = msg.Revision
+		a.streamAlive = true
+		a.streamHealthy = true
+	}
+	if msg.Revision > 0 && msg.Type != "snapshot" {
 		if a.lastRevision > 0 && msg.Revision != a.lastRevision+1 {
 			a.streamHealthy = false
 			a.message = "live update gap detected — refreshing state"
@@ -832,7 +864,7 @@ func (a *app) header() string {
 			pending++
 		case model.StatusRunning:
 			running++
-		case model.StatusFailed, model.StatusTimeout, model.StatusBlocked, model.StatusCancelFailed:
+		case model.StatusFailed, model.StatusTimeout, model.StatusBlocked, model.StatusCancelFailed, model.StatusUnknown:
 			failed++
 		}
 	}
@@ -1062,7 +1094,7 @@ func (a app) settingsView() string {
 		fmt.Sprintf("Bell on approval      %s", yesNo(a.bellPending)), "",
 		a.styles.section.Render("Audit"),
 		"Output                 " + audit, "",
-		a.styles.muted.Render("Configuration: " + safeText(paths.ConfigPath())),
+		a.styles.muted.Render("Endpoint: " + safeText(client.Endpoint())),
 	}
 	return a.styles.title.Render("Settings") + "\n\n" + a.styles.panel.Render(strings.Join(items, "\n"))
 }
@@ -1511,4 +1543,16 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+type subscriptionConnection struct {
+	protocol.Connection
+	done chan struct{}
+	once sync.Once
+	err  error
+}
+
+func (c *subscriptionConnection) Close() error {
+	c.once.Do(func() { close(c.done); c.err = c.Connection.Close() })
+	return c.err
 }

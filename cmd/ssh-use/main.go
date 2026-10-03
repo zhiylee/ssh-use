@@ -8,6 +8,7 @@ import (
 
 	"github.com/zhiylee/ssh-use/internal/cli"
 	"github.com/zhiylee/ssh-use/internal/daemon"
+	"github.com/zhiylee/ssh-use/internal/remote"
 	uiterm "github.com/zhiylee/ssh-use/internal/tui"
 )
 
@@ -16,6 +17,9 @@ var (
 	runCopyFn   = cli.RunCopy
 	runTUIFn    = uiterm.Run
 	runDaemonFn = daemon.Run
+	runServerFn = cli.RunServer
+	runHostsFn  = cli.RunHosts
+	runJobsFn   = cli.RunJobs
 )
 
 func main() {
@@ -23,12 +27,22 @@ func main() {
 }
 
 func run(args []string, stderr io.Writer) int {
+	defer remote.CloseClients()
 	if len(args) < 1 {
 		usage(stderr)
 		return 2
 	}
 
 	switch args[0] {
+	case "server":
+		return runServerFn(args[1:])
+	case "hosts", "host":
+		return runHostsFn(args[1:])
+	case "jobs":
+		return runJobsFn(args[1:])
+	case "help", "--help", "-h":
+		usage(stderr)
+		return 0
 	case "exec":
 		return runExecFn(args[1:])
 	case "cp":
@@ -49,7 +63,12 @@ func run(args []string, stderr io.Writer) int {
 
 func usage(w io.Writer) {
 	fmt.Fprintln(w, "usage:")
-	fmt.Fprintln(w, "  ssh-use exec <host> -- <command>")
+	fmt.Fprintln(w, "  ssh-use exec [--request-id <id>] <host> -- <command>")
 	fmt.Fprintln(w, "  ssh-use cp [--atomic] <source> <destination>")
 	fmt.Fprintln(w, "  ssh-use tui [--safe]")
+	fmt.Fprintln(w, "  ssh-use hosts <list|get|add|update|delete> [name] [options]")
+	fmt.Fprintln(w, "  ssh-use jobs <list|get> [id]")
+	fmt.Fprintln(w, "  ssh-use server init --dir <new-directory> --host <hostname>")
+	fmt.Fprintln(w, "  ssh-use server --dir <directory> [--listen 127.0.0.1:7443]")
+	fmt.Fprintln(w, "  ssh-use server client <add|remove> <name> --dir <directory> [options]")
 }

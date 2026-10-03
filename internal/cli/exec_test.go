@@ -77,7 +77,7 @@ func TestRunExecStreamsAndReturnsRemoteExit(t *testing.T) {
 	var out, errOut bytes.Buffer
 	restore := stubCLI(t, &out, &errOut)
 	defer restore()
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go func() {
 			defer serverConn.Close()
@@ -106,9 +106,13 @@ func TestRunExecStreamsAndReturnsRemoteExit(t *testing.T) {
 	if out.String() != "out" || !strings.Contains(errOut.String(), "err") || !strings.Contains(errOut.String(), "queued") || !strings.Contains(errOut.String(), "waiting") {
 		t.Fatalf("stdout=%q stderr=%q", out.String(), errOut.String())
 	}
+	if !strings.Contains(errOut.String(), "remote_exit_code=3 job_id=cmd") || strings.Contains(errOut.String(), "ssh_use_error_code=") {
+		t.Fatalf("remote failure origin missing: %s", errOut.String())
+	}
 }
 
 func TestRunExecSSHUseErrors(t *testing.T) {
+	remoteZero := 0
 	tests := []struct {
 		name string
 		msg  protocol.Message
@@ -116,13 +120,14 @@ func TestRunExecSSHUseErrors(t *testing.T) {
 	}{
 		{"final", protocol.Message{Type: "final", OK: false, Error: "blocked", SSHUseErrorCode: "policy_blocked"}, 126},
 		{"error", protocol.Message{Type: "error", Error: "timeout", SSHUseErrorCode: "approval_timeout"}, 124},
+		{"deduplicated", protocol.Message{Type: "command", ID: "existing", Record: &model.CommandRecord{SSHUseErrorCode: "command_timeout", RemoteExitCode: &remoteZero}}, 124},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out, errOut bytes.Buffer
 			restore := stubCLI(t, &out, &errOut)
 			defer restore()
-			connectFn = func() (net.Conn, error) {
+			connectFn = func() (protocol.Connection, error) {
 				clientConn, serverConn := net.Pipe()
 				go func() {
 					defer serverConn.Close()
@@ -137,6 +142,13 @@ func TestRunExecSSHUseErrors(t *testing.T) {
 			if code := RunExec([]string{"prod", "--", "uptime"}); code != tt.want {
 				t.Fatalf("code=%d want=%d stderr=%q", code, tt.want, errOut.String())
 			}
+			serviceCode := tt.msg.SSHUseErrorCode
+			if tt.msg.Record != nil {
+				serviceCode = tt.msg.Record.SSHUseErrorCode
+			}
+			if !strings.Contains(errOut.String(), "ssh_use_error_code="+serviceCode) || strings.Contains(errOut.String(), "remote_exit_code=") {
+				t.Fatalf("service failure origin missing: %s", errOut.String())
+			}
 		})
 	}
 }
@@ -150,7 +162,7 @@ func TestRunExecSetupErrors(t *testing.T) {
 		t.Fatalf("ensure code=%d", code)
 	}
 	ensureDaemonFn = func(context.Context) error { return nil }
-	connectFn = func() (net.Conn, error) { return nil, errors.New("connect bad") }
+	connectFn = func() (protocol.Connection, error) { return nil, errors.New("connect bad") }
 	if code := RunExec([]string{"prod", "--", "uptime"}); code != 1 {
 		t.Fatalf("connect code=%d", code)
 	}
@@ -160,7 +172,7 @@ func TestRunExecDecodeErrors(t *testing.T) {
 	var out, errOut bytes.Buffer
 	restore := stubCLI(t, &out, &errOut)
 	defer restore()
-	connectFn = func() (net.Conn, error) {
+	connectFn = func() (protocol.Connection, error) {
 		clientConn, serverConn := net.Pipe()
 		go func() {
 			defer serverConn.Close()
@@ -187,7 +199,7 @@ func stubCLI(t *testing.T, out, errOut *bytes.Buffer) func() {
 	origGetpid := getpidFn
 	origCancel := cancelRequestFn
 	ensureDaemonFn = func(context.Context) error { return nil }
-	connectFn = func() (net.Conn, error) { return nil, errors.New("connect not stubbed") }
+	connectFn = func() (protocol.Connection, error) { return nil, errors.New("connect not stubbed") }
 	stdout = out
 	stderr = errOut
 	getwdFn = func() (string, error) { return "/work", nil }

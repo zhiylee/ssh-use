@@ -2,13 +2,14 @@ package protocol
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
-func TestChunkBase64RoundTrip(t *testing.T) {
+func TestChunkBinaryRoundTrip(t *testing.T) {
 	original := []byte{0, 1, 2, 'h', 'i', 255}
 	msg := Chunk("stdout_chunk", "cmd", 7, original)
-	if msg.Encoding != "base64" || msg.Seq != 7 || msg.ID != "cmd" {
+	if msg.Encoding != "" || msg.Payload == nil || msg.Seq != 7 || msg.ID != "cmd" {
 		t.Fatalf("bad chunk metadata: %#v", msg)
 	}
 	decoded, err := DecodeData(msg)
@@ -17,6 +18,21 @@ func TestChunkBase64RoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(decoded, original) {
 		t.Fatalf("decoded = %v", decoded)
+	}
+}
+
+func TestBoundedDecoderRejectsOversizeFrame(t *testing.T) {
+	var msg Message
+	dec := NewBoundedDecoder(strings.NewReader(`{"type":"exec","command":"`+strings.Repeat("x", 8192)+`"}`+"\n"), 4096)
+	if err := dec.Decode(&msg); err == nil {
+		t.Fatal("accepted oversized frame")
+	}
+	dec = NewBoundedDecoder(strings.NewReader("{\"type\":\"ping\"}\n{\"type\":\"snapshot\"}\n"), 4096)
+	if err := dec.Decode(&msg); err != nil || msg.Type != "ping" {
+		t.Fatalf("first: %#v %v", msg, err)
+	}
+	if err := dec.Decode(&msg); err != nil || msg.Type != "snapshot" {
+		t.Fatalf("second: %#v %v", msg, err)
 	}
 }
 

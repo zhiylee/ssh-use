@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
+	"github.com/google/uuid"
 	"github.com/zhiylee/ssh-use/internal/client"
 	"github.com/zhiylee/ssh-use/internal/protocol"
 )
@@ -28,6 +29,14 @@ var (
 )
 
 func RunExec(args []string) int {
+	requestID := uuid.NewString()
+	if len(args) > 0 && args[0] == "--request-id" {
+		if len(args) < 3 || len(args[1]) == 0 || len(args[1]) > 128 {
+			fmt.Fprintln(stderr, "ssh-use: --request-id requires 1-128 characters")
+			return 2
+		}
+		requestID, args = args[1], args[2:]
+	}
 	host, command, err := parseExecArgs(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "ssh-use: %v\n", err)
@@ -49,8 +58,14 @@ func RunExec(args []string) int {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+	done := make(chan struct{})
+	defer close(done)
 	go func() {
-		<-sigCh
+		select {
+		case <-sigCh:
+		case <-done:
+			return
+		}
 		id, _ := commandID.Load().(string)
 		if id != "" {
 			cancelRequestFn(id)
@@ -67,6 +82,7 @@ func RunExec(args []string) int {
 	}
 	if err := enc.Encode(protocol.Message{
 		Type:      "exec",
+		RequestID: requestID,
 		Host:      host,
 		Command:   command,
 		Source:    source,
@@ -74,6 +90,9 @@ func RunExec(args []string) int {
 		ClientPID: getpidFn(),
 	}); err != nil {
 		fmt.Fprintf(stderr, "ssh-use: send request: %v\n", err)
+		if client.IsRemote() {
+			fmt.Fprintf(stderr, "ssh-use: request ID: %s; retry only with --request-id %s to avoid duplicate execution\n", requestID, requestID)
+		}
 		return 1
 	}
 
@@ -81,12 +100,29 @@ func RunExec(args []string) int {
 		var msg protocol.Message
 		if err := dec.Decode(&msg); err != nil {
 			fmt.Fprintf(stderr, "ssh-use: daemon connection closed: %v\n", err)
+			if id, _ := commandID.Load().(string); id != "" {
+				fmt.Fprintf(stderr, "ssh-use: inspect status with ssh-use jobs get %s\n", id)
+			}
+			if client.IsRemote() {
+				fmt.Fprintf(stderr, "ssh-use: request ID: %s; retry only with --request-id %s to avoid duplicate execution\n", requestID, requestID)
+			}
 			return 1
 		}
 		if msg.ID != "" {
 			commandID.Store(msg.ID)
 		}
 		switch msg.Type {
+		case "command":
+			fmt.Fprintf(stderr, "ssh-use: request already accepted as %s; inspect with ssh-use jobs get %s\n", msg.ID, msg.ID)
+			if msg.Record != nil && msg.Record.SSHUseErrorCode != "" {
+				writeResultDiagnostic(msg.ID, 0, msg.Record.SSHUseErrorCode)
+				return exitCodeForSSHUseError(msg.Record.SSHUseErrorCode)
+			}
+			if msg.Record != nil && msg.Record.RemoteExitCode != nil {
+				writeResultDiagnostic(msg.ID, *msg.Record.RemoteExitCode, "")
+				return *msg.Record.RemoteExitCode
+			}
+			return 1
 		case "stdout_chunk":
 			data, err := protocol.DecodeData(msg)
 			if err != nil {
@@ -126,6 +162,7 @@ func RunExec(args []string) int {
 		case "final":
 			if msg.OK {
 				if msg.RemoteExitCode != nil {
+					writeResultDiagnostic(msg.ID, *msg.RemoteExitCode, "")
 					return *msg.RemoteExitCode
 				}
 				return 0
@@ -133,13 +170,25 @@ func RunExec(args []string) int {
 			if msg.Error != "" {
 				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
+			writeResultDiagnostic(msg.ID, 0, msg.SSHUseErrorCode)
 			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		case "error":
 			if msg.Error != "" {
 				fmt.Fprintf(stderr, "ssh-use: %s\n", msg.Error)
 			}
+			writeResultDiagnostic(msg.ID, 0, msg.SSHUseErrorCode)
 			return exitCodeForSSHUseError(msg.SSHUseErrorCode)
 		}
+	}
+}
+
+// Exit numbers overlap with remote program exits. Emit the origin separately
+// without adding status text to stdout or changing the exit-code contract.
+func writeResultDiagnostic(id string, remoteExit int, serviceCode string) {
+	if serviceCode != "" {
+		fmt.Fprintf(stderr, "ssh-use: ssh_use_error_code=%s job_id=%s\n", serviceCode, id)
+	} else if remoteExit != 0 {
+		fmt.Fprintf(stderr, "ssh-use: remote_exit_code=%d job_id=%s\n", remoteExit, id)
 	}
 }
 

@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/zhiylee/ssh-use/internal/audit"
 	"github.com/zhiylee/ssh-use/internal/config"
 	"github.com/zhiylee/ssh-use/internal/model"
@@ -41,8 +43,9 @@ type Server struct {
 	hostQueues  map[string]*hostQueue
 	paused      bool
 	resumeCh    chan struct{}
-	nextID      atomic.Uint64
 	revision    atomic.Uint64
+	remote      bool
+	events      *messageJournal
 }
 
 type commandExecutor interface {
@@ -62,6 +65,7 @@ type commandState struct {
 	cancel   context.CancelFunc
 	approval chan string
 	cfg      *config.Config
+	decided  bool
 }
 
 type hostQueue struct {
@@ -80,19 +84,32 @@ type limitedBuffer struct {
 var errConfigChanged = errors.New("config changed while reloading")
 
 func Run(ctx context.Context) error {
-	cfg, err := config.Load()
+	unlock, err := lockInstance()
 	if err != nil {
 		return err
+	}
+	defer unlock()
+	server, err := newServer()
+	if err != nil {
+		return err
+	}
+	defer server.audit.Close()
+	return server.listen(ctx)
+}
+
+func newServer() (*Server, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, err
 	}
 	engine, err := policy.New(cfg.Policy)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	store, err := audit.Open(cfg.AuditEnabled())
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer store.Close()
 
 	server := &Server{
 		cfg:              cfg,
@@ -105,7 +122,7 @@ func Run(ctx context.Context) error {
 		hostQueues:       map[string]*hostQueue{},
 		resumeCh:         make(chan struct{}),
 	}
-	return server.listen(ctx)
+	return server, nil
 }
 
 func (s *Server) listen(ctx context.Context) error {
@@ -126,10 +143,32 @@ func (s *Server) listen(ctx context.Context) error {
 	defer listener.Close()
 	defer os.Remove(socketPath)
 	_ = os.Chmod(socketPath, 0o600)
+	return serverLoop(ctx, listener, s, s.handleConn)
+}
 
-	go s.idleReaper(ctx)
-	go s.auditRetention(ctx)
-	go s.watchConfig(ctx, 250*time.Millisecond)
+func serverLoop(ctx context.Context, listener net.Listener, s *Server, handler func(context.Context, net.Conn)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var background sync.WaitGroup
+	background.Add(3)
+	go func() { defer background.Done(); s.idleReaper(ctx) }()
+	go func() { defer background.Done(); s.auditRetention(ctx) }()
+	go func() { defer background.Done(); s.watchConfig(ctx, 250*time.Millisecond) }()
+	var mu sync.Mutex
+	conns := map[net.Conn]bool{}
+	var wg sync.WaitGroup
+	shutdown := make(chan struct{})
+	go func() {
+		defer close(shutdown)
+		<-ctx.Done()
+		listener.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for conn := range conns {
+			conn.Close()
+		}
+	}()
+	defer func() { cancel(); <-shutdown; wg.Wait(); background.Wait(); s.pool.CloseAllIdle() }()
 
 	for {
 		conn, err := listener.Accept()
@@ -141,7 +180,22 @@ func (s *Server) listen(ctx context.Context) error {
 				return err
 			}
 		}
-		go s.handleConn(ctx, conn)
+		mu.Lock()
+		if ctx.Err() != nil {
+			mu.Unlock()
+			conn.Close()
+			return nil
+		}
+		conns[conn] = true
+		mu.Unlock()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { conn.Close(); mu.Lock(); delete(conns, conn); mu.Unlock() }()
+			if ctx.Err() == nil {
+				handler(ctx, conn)
+			}
+		}()
 	}
 }
 
@@ -341,60 +395,73 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	if err := dec.Decode(&msg); err != nil {
 		return
 	}
+	s.dispatch(ctx, conn, enc, dec, msg)
+}
 
+func (s *Server) dispatch(ctx context.Context, conn net.Conn, enc *protocol.Encoder, dec *protocol.Decoder, msg protocol.Message) {
 	switch msg.Type {
 	case "exec":
 		s.handleExec(ctx, enc, msg)
 	case "file.transfer":
 		s.handleTransfer(ctx, conn, enc, dec, msg)
-	case "snapshot":
-		_ = enc.Encode(s.snapshot())
 	case "subscribe_events":
 		s.handleSubscribe(conn, enc)
+	default:
+		_ = enc.Encode(s.request(ctx, msg))
+	}
+}
+
+// request is the transport-independent control service shared by local and RPC clients.
+func (s *Server) request(ctx context.Context, msg protocol.Message) protocol.Message {
+	switch msg.Type {
+	case "ping":
+		return protocol.Message{Type: "ack", OK: true}
+	case "hosts.list", "hosts.get", "hosts.add", "hosts.update", "hosts.delete":
+		return s.manageHosts(msg)
+	case "command.get":
+		return s.commandInfo(ctx, msg.ID)
+	case "snapshot":
+		return s.snapshot()
 	case "approval.decide":
-		_ = enc.Encode(s.approvalDecide(msg.ID, msg.Decision))
+		return s.approvalDecide(msg.ID, msg.Decision)
 	case "command.cancel":
-		_ = enc.Encode(s.cancelCommand(msg.ID, "cancelled by user"))
+		return s.cancelCommand(msg.ID, "cancelled by user")
 	case "daemon.pause":
 		s.setPaused(msg.Paused)
-		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID})
+		return protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID}
 	case "daemon.emergency_stop":
 		s.emergencyStop()
-		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID})
+		return protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID}
 	case "policy.set_mode":
 		if !config.ValidMode(msg.Mode) {
-			_ = enc.Encode(protocol.Message{OK: false, Type: "ack", Error: "invalid mode"})
-			return
+			return protocol.Message{OK: false, Type: "ack", Error: "invalid mode"}
 		}
 		if err := s.setPolicyMode(msg.Mode); err != nil {
-			_ = enc.Encode(protocol.Message{OK: false, Type: "ack", Error: err.Error()})
-			return
+			return protocol.Message{OK: false, Type: "ack", Error: err.Error()}
 		}
 		runtimeCfg, engine, generation := s.currentConfigSnapshot()
 		settings := runtimeSettings(runtimeCfg, engine, generation)
 		s.broadcast(protocol.Message{Type: "policy.mode_changed", Mode: msg.Mode, RuntimeSettings: settings})
-		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", Mode: msg.Mode, RequestID: msg.RequestID, RuntimeSettings: settings})
+		return protocol.Message{OK: true, Type: "ack", Mode: msg.Mode, RequestID: msg.RequestID, RuntimeSettings: settings}
 	case "connections.close_idle":
 		s.pool.CloseAllIdle()
 		s.broadcast(protocol.Message{Type: "connection.updated"})
-		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID})
+		return protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID}
 	case "connections.close_host":
 		if msg.Host == "" {
-			_ = enc.Encode(protocol.Message{OK: false, Type: "ack", Error: "host is required"})
-			return
+			return protocol.Message{OK: false, Type: "ack", Error: "host is required"}
 		}
 		if !s.pool.CloseHostIdle(msg.Host) {
-			_ = enc.Encode(protocol.Message{OK: false, Type: "ack", Error: "connection is active or not found"})
-			return
+			return protocol.Message{OK: false, Type: "ack", Error: "connection is active or not found"}
 		}
 		s.broadcast(protocol.Message{Type: "connection.updated", Host: msg.Host})
-		_ = enc.Encode(protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID})
+		return protocol.Message{OK: true, Type: "ack", RequestID: msg.RequestID}
 	default:
-		_ = enc.Encode(protocol.Message{Type: "error", Error: "unknown request type", SSHUseErrorCode: "protocol_error"})
+		return protocol.Message{Type: "error", Error: "unknown request type", SSHUseErrorCode: "protocol_error"}
 	}
 }
 
-func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *protocol.Encoder, dec *protocol.Decoder, req protocol.Message) {
+func (s *Server) handleTransfer(parent context.Context, conn protocol.Connection, enc *protocol.Encoder, dec *protocol.Decoder, req protocol.Message) {
 	if req.Host == "" || req.LocalPath == "" || req.RemotePath == "" {
 		_ = enc.Encode(protocol.Message{Type: "error", Error: "host, local path, and remote path are required", SSHUseErrorCode: "protocol_error"})
 		return
@@ -414,7 +481,7 @@ func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *prot
 	}
 
 	runtimeCfg, policyEngine := s.currentConfig()
-	hostCfg, err := runtimeCfg.ResolveHost(req.Host)
+	hostCfg, err := s.resolveHost(runtimeCfg, req.Host)
 	if err != nil {
 		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), SSHUseErrorCode: "config_error"})
 		return
@@ -458,7 +525,10 @@ func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *prot
 	}
 	_ = safeEncode(protocol.Message{Type: "command.created", ID: id, Record: cloneRecordPtr(state)})
 	s.broadcast(protocol.Message{Type: "command.created", ID: id, Record: cloneRecordPtr(state)})
-	s.save(state)
+	if err := s.save(state); err != nil && s.remote {
+		s.finalSSHUseError(safeEncode, state, model.StatusFailed, "audit_failed", "could not persist task; execution was not started")
+		return
+	}
 
 	if !s.waitIfPaused(cmdCtx, state) {
 		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "transfer cancelled")
@@ -481,6 +551,10 @@ func (s *Server) handleTransfer(parent context.Context, conn net.Conn, enc *prot
 	}
 	defer release()
 
+	if s.remote && s.configChanged(runtimeCfg) {
+		s.finalSSHUseError(safeEncode, state, model.StatusBlocked, "config_changed", "configuration changed while waiting; submit again for evaluation")
+		return
+	}
 	transferCtx, timeoutCancel := context.WithTimeout(cmdCtx, runtimeCfg.Defaults.CommandTimeout.Duration)
 	defer timeoutCancel()
 	state.mu.Lock()
@@ -671,11 +745,17 @@ type transferChunkWriter struct {
 }
 
 func (w *transferChunkWriter) Write(data []byte) (int, error) {
-	w.seq++
-	if err := w.encode(protocol.Chunk("transfer.chunk", w.id, w.seq, data)); err != nil {
-		return 0, err
+	written := 0
+	for len(data) > 0 {
+		n := min(len(data), protocol.ChunkSize)
+		w.seq++
+		if err := w.encode(protocol.Chunk("transfer.chunk", w.id, w.seq, data[:n])); err != nil {
+			return written, err
+		}
+		written += n
+		data = data[n:]
 	}
-	return len(data), nil
+	return written, nil
 }
 
 func validateUpload(req protocol.Message, reader *transferChunkReader, result sshpool.TransferResult) error {
@@ -701,13 +781,16 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 	}
 
 	runtimeCfg, policyEngine := s.currentConfig()
-	hostCfg, err := runtimeCfg.ResolveHost(req.Host)
+	hostCfg, err := s.resolveHost(runtimeCfg, req.Host)
 	if err != nil {
 		_ = enc.Encode(protocol.Message{Type: "error", Error: err.Error(), SSHUseErrorCode: "config_error"})
 		return
 	}
 
 	id := s.newID()
+	if s.remote && req.ID != "" {
+		id = req.ID
+	}
 	decision := policyEngine.Evaluate(req.Command)
 	now := time.Now()
 	rec := model.CommandRecord{
@@ -742,9 +825,12 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 		defer writeMu.Unlock()
 		return enc.Encode(msg)
 	}
+	if err := s.save(state); err != nil && s.remote {
+		s.finalSSHUseError(safeEncode, state, model.StatusFailed, "audit_failed", "could not persist task; execution was not started")
+		return
+	}
 	_ = safeEncode(protocol.Message{Type: "command.created", ID: id, Record: cloneRecordPtr(state)})
 	s.broadcast(protocol.Message{Type: "command.created", ID: id, Record: cloneRecordPtr(state)})
-	s.save(state)
 
 	if !s.waitIfPaused(cmdCtx, state) {
 		s.finalSSHUseError(safeEncode, state, model.StatusCancelled, "cancelled", "command cancelled")
@@ -769,6 +855,10 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 	}
 	defer release()
 
+	if s.remote && s.configChanged(runtimeCfg) {
+		s.finalSSHUseError(safeEncode, state, model.StatusBlocked, "config_changed", "configuration changed while waiting; submit again for evaluation")
+		return
+	}
 	commandCtx, timeoutCancel := context.WithTimeout(cmdCtx, runtimeCfg.Defaults.CommandTimeout.Duration)
 	defer timeoutCancel()
 	state.mu.Lock()
@@ -784,16 +874,30 @@ func (s *Server) handleExec(parent context.Context, enc *protocol.Encoder, req p
 	var stderrSeq atomic.Int64
 
 	emitStdout := func(data []byte) {
-		stdoutBuf.Append(data)
-		s.updateOutput(state, stdoutBuf, nil)
-		_ = safeEncode(protocol.Chunk("stdout_chunk", id, stdoutSeq.Add(1), data))
-		s.broadcast(protocol.Message{Type: "command.stdout", ID: id, Data: string(data), Record: cloneRecordPtr(state)})
+		for len(data) > 0 {
+			n := min(len(data), protocol.ChunkSize)
+			part := data[:n]
+			data = data[n:]
+
+			stdoutBuf.Append(part)
+			s.updateOutput(state, stdoutBuf, nil)
+			_ = safeEncode(protocol.Chunk("stdout_chunk", id, stdoutSeq.Add(1), part))
+			s.broadcast(protocol.Message{Type: "command.stdout", ID: id, Data: string(part), Record: cloneRecordPtr(state)})
+
+		}
 	}
 	emitStderr := func(data []byte) {
-		stderrBuf.Append(data)
-		s.updateOutput(state, nil, stderrBuf)
-		_ = safeEncode(protocol.Chunk("stderr_chunk", id, stderrSeq.Add(1), data))
-		s.broadcast(protocol.Message{Type: "command.stderr", ID: id, Data: string(data), Record: cloneRecordPtr(state)})
+		for len(data) > 0 {
+			n := min(len(data), protocol.ChunkSize)
+			part := data[:n]
+			data = data[n:]
+
+			stderrBuf.Append(part)
+			s.updateOutput(state, nil, stderrBuf)
+			_ = safeEncode(protocol.Chunk("stderr_chunk", id, stderrSeq.Add(1), part))
+			s.broadcast(protocol.Message{Type: "command.stderr", ID: id, Data: string(part), Record: cloneRecordPtr(state)})
+
+		}
 	}
 
 	result, err := s.pool.Execute(commandCtx, sshpool.ExecOptions{
@@ -993,13 +1097,15 @@ func (s *Server) approvalDecide(id, decision string) protocol.Message {
 	}
 	state.mu.Lock()
 	status := state.record.Status
-	state.mu.Unlock()
-	if status != model.StatusPendingApproval {
+	defer state.mu.Unlock()
+	if status != model.StatusPendingApproval || state.decided {
 		return protocol.Message{Type: "ack", OK: false, Error: "command is not pending approval"}
 	}
 	select {
 	case state.approval <- decision:
+		state.decided = true
 	default:
+		return protocol.Message{Type: "ack", Error: "approval decision already queued"}
 	}
 	return protocol.Message{Type: "ack", OK: true}
 }
@@ -1078,6 +1184,8 @@ func (s *Server) emergencyStop() {
 }
 
 func (s *Server) snapshot() protocol.Message {
+	// Replay everything published while this snapshot is being assembled.
+	revision := s.revision.Load()
 	runtimeCfg, policyEngine, generation := s.currentConfigSnapshot()
 	s.mu.Lock()
 	paused := s.paused
@@ -1104,7 +1212,7 @@ func (s *Server) snapshot() protocol.Message {
 	sort.Slice(commands, func(i, j int) bool {
 		return commands[i].CreatedAt.After(commands[j].CreatedAt)
 	})
-	return protocol.Message{Type: "snapshot", OK: true, Paused: paused, Mode: mode, Commands: commands, Connections: s.pool.Statuses(), PolicyRules: s.policyRules(commands, policyEngine), Revision: s.revision.Load(), RuntimeSettings: runtimeSettings(runtimeCfg, policyEngine, generation)}
+	return protocol.Message{Type: "snapshot", OK: true, Paused: paused, Mode: mode, Commands: commands, Connections: s.pool.Statuses(), PolicyRules: s.policyRules(commands, policyEngine), Revision: revision, RuntimeSettings: runtimeSettings(runtimeCfg, policyEngine, generation)}
 }
 
 func (s *Server) policyRules(commands []model.CommandRecord, policyEngine *policy.Engine) []model.PolicyRuleView {
@@ -1136,18 +1244,58 @@ func (s *Server) handleSubscribe(conn net.Conn, enc *protocol.Encoder) {
 		close(ch)
 	}()
 
-	_ = enc.Encode(s.snapshot())
-	for msg := range ch {
-		if err := enc.Encode(msg); err != nil {
+	closed := make(chan struct{})
+	go func() { _, _ = io.Copy(io.Discard, conn); close(closed) }()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	if err := enc.Encode(s.snapshot()); err != nil {
+		return
+	}
+	for {
+		select {
+		case <-closed:
 			return
+		case msg := <-ch:
+			if err := enc.Encode(msg); err != nil {
+				return
+			}
+		case <-ticker.C:
+			if err := enc.Encode(s.snapshot()); err != nil {
+				return
+			}
 		}
 	}
+}
+
+func (s *Server) configChanged(previous *config.Config) bool {
+	current, _ := s.currentConfig()
+	return configRevision(current) != configRevision(previous)
+}
+
+func (s *Server) resolveHost(cfg *config.Config, name string) (config.Host, error) {
+	if s.remote {
+		if _, ok := cfg.Hosts[name]; !ok {
+			return config.Host{}, fmt.Errorf("unknown registered host %q", name)
+		}
+	}
+	return cfg.ResolveHost(name)
 }
 
 func (s *Server) broadcast(msg protocol.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.remote && msg.Record != nil {
+		record := *msg.Record
+		previewRecord(&record)
+		msg.Record = &record
+		if msg.Type == "command.stdout" || msg.Type == "command.stderr" {
+			msg.Data = ""
+		}
+	}
 	msg.Revision = s.revision.Add(1)
+	if s.events != nil {
+		s.events.publish(msg)
+	}
 	for ch := range s.subscribers {
 		select {
 		case ch <- msg:
@@ -1159,6 +1307,21 @@ func (s *Server) broadcast(msg protocol.Message) {
 func (s *Server) addCommand(state *commandState) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Keep recent tasks for live views; older completed tasks remain in SQLite.
+	if len(s.order) >= 200 {
+		keep := make([]string, 0, len(s.order))
+		remove := len(s.order) - 199
+		for _, id := range s.order {
+			previous := s.commands[id]
+			if remove > 0 && previous != nil && !cloneRecord(previous).Status.Cancellable() {
+				delete(s.commands, id)
+				remove--
+				continue
+			}
+			keep = append(keep, id)
+		}
+		s.order = keep
+	}
 	s.commands[state.record.ID] = state
 	s.order = append(s.order, state.record.ID)
 }
@@ -1174,7 +1337,7 @@ func (s *Server) saveAndBroadcast(state *commandState, event string) {
 	s.broadcast(protocol.Message{Type: event, ID: state.record.ID, Record: cloneRecordPtr(state)})
 }
 
-func (s *Server) save(state *commandState) {
+func (s *Server) save(state *commandState) error {
 	rec := cloneRecord(state)
 	runtimeCfg := state.cfg
 	if runtimeCfg == nil {
@@ -1188,7 +1351,7 @@ func (s *Server) save(state *commandState) {
 	}
 	rec.Stdout, rec.StdoutTruncated = audit.LimitOutput(rec.Stdout, runtimeCfg.Audit.MaxOutputBytes)
 	rec.Stderr, rec.StderrTruncated = audit.LimitOutput(rec.Stderr, runtimeCfg.Audit.MaxOutputBytes)
-	_ = s.audit.Save(context.Background(), rec)
+	return s.audit.Save(context.Background(), rec)
 }
 
 func (s *Server) updateOutput(state *commandState, stdout, stderr *limitedBuffer) {
@@ -1237,8 +1400,7 @@ func (s *Server) auditRetention(ctx context.Context) {
 }
 
 func (s *Server) newID() string {
-	n := s.nextID.Add(1)
-	return fmt.Sprintf("cmd_%d_%06d", time.Now().UnixMilli(), n)
+	return "cmd_" + uuid.NewString()
 }
 
 func cloneRecord(state *commandState) model.CommandRecord {

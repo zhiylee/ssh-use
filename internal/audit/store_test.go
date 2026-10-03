@@ -46,6 +46,51 @@ func TestStoreSaveRecentAndUpdate(t *testing.T) {
 	}
 }
 
+func TestRestartMarksOnlyUnfinishedTasksUnknown(t *testing.T) {
+	t.Setenv("SSH_USE_DATA_DIR", t.TempDir())
+	ctx := context.Background()
+	store, err := Open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []model.Status{model.StatusRunning, model.StatusPendingApproval, model.StatusDone} {
+		if err := store.Save(ctx, model.CommandRecord{ID: string(status), CreatedAt: time.Now(), Host: "h", Status: status}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fresh, err := store.ClaimRequest(ctx, "request", "digest"); err != nil || !fresh {
+		t.Fatalf("claim: %t %v", fresh, err)
+	}
+	store.Close()
+	store, err = Open(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.MarkInterrupted(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []model.Status{model.StatusRunning, model.StatusPendingApproval, model.StatusDone} {
+		rec, err := store.Get(ctx, string(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := model.StatusUnknown
+		if id == model.StatusDone {
+			want = model.StatusDone
+		}
+		if rec == nil || rec.Status != want {
+			t.Fatalf("%s: %#v", id, rec)
+		}
+	}
+	if fresh, err := store.ClaimRequest(ctx, "request", "digest"); err != nil || fresh {
+		t.Fatalf("reclaim: %t %v", fresh, err)
+	}
+	if _, err := store.ClaimRequest(ctx, "request", "other"); err == nil {
+		t.Fatal("accepted conflicting request")
+	}
+}
+
 func TestOpenMigratesLegacyErrorColumn(t *testing.T) {
 	t.Setenv("SSH_USE_DATA_DIR", t.TempDir())
 	ctx := context.Background()

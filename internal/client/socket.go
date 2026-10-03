@@ -12,6 +12,7 @@ import (
 
 	"github.com/zhiylee/ssh-use/internal/paths"
 	"github.com/zhiylee/ssh-use/internal/protocol"
+	"github.com/zhiylee/ssh-use/internal/remote"
 )
 
 var (
@@ -19,11 +20,25 @@ var (
 	startDaemonFn = startDaemon
 )
 
-func Connect() (net.Conn, error) {
+func Connect() (protocol.Connection, error) {
+	cfg, err := remote.LoadClient()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Endpoint != "" {
+		return remote.Dial(cfg)
+	}
 	return dialUnix(paths.SocketPath())
 }
 
 func EnsureDaemon(ctx context.Context) error {
+	cfg, err := remote.LoadClient()
+	if err != nil {
+		return err
+	}
+	if cfg.Endpoint != "" {
+		return nil
+	} // Connect authenticates; never spawn a local fallback.
 	conn, err := Connect()
 	if err == nil {
 		_ = conn.Close()
@@ -48,9 +63,32 @@ func EnsureDaemon(ctx context.Context) error {
 	return fmt.Errorf("daemon did not become ready; see %s", paths.LogPath())
 }
 
+func IsRemote() bool {
+	cfg, err := remote.LoadClient()
+	return err != nil || cfg.Endpoint != ""
+}
+
+func Endpoint() string {
+	cfg, err := remote.LoadClient()
+	if err != nil {
+		return "invalid remote configuration"
+	}
+	if cfg.Endpoint != "" {
+		return cfg.Endpoint
+	}
+	return paths.SocketPath()
+}
+
 func Request(ctx context.Context, msg protocol.Message) (protocol.Message, error) {
 	if err := EnsureDaemon(ctx); err != nil {
 		return protocol.Message{}, err
+	}
+	cfg, err := remote.LoadClient()
+	if err != nil {
+		return protocol.Message{}, err
+	}
+	if cfg.Endpoint != "" {
+		return remote.Request(ctx, cfg, msg)
 	}
 	conn, err := Connect()
 	if err != nil {

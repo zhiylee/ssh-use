@@ -1,0 +1,154 @@
+syntax = "proto3";
+package sshuse.v2;
+option go_package = "github.com/zhiylee/ssh-use/internal/rpcpb";
+import "google/protobuf/timestamp.proto";
+
+// The service separates durable job submission from observers. Closing an
+// observer never cancels an accepted job. Transfer streams remain client-owned.
+service Gateway {
+  rpc Request(Message) returns (Message);
+  rpc SubmitJob(Message) returns (Message);
+  rpc WatchJob(WatchRequest) returns (stream Message);
+  rpc WatchEvents(WatchRequest) returns (stream Message);
+  rpc Transfer(stream Message) returns (stream Message);
+}
+message WatchRequest { string id = 1; uint64 cursor = 2; }
+// A wrapper preserves an explicit empty tag list in a host patch.
+message StringList { repeated string values = 1; }
+
+message Host {
+  string addr = 1;
+  string user = 2;
+  int64 port = 3;
+  string key = 4;
+  repeated string tags = 5;
+}
+
+message HostPatch {
+  optional string addr = 1;
+  optional string user = 2;
+  optional int64 port = 3;
+  optional string key = 4;
+  StringList tags = 5;
+}
+
+message PolicyDecision {
+  string action = 1;
+  string risk = 2;
+  string rule_name = 3;
+  string matched_pattern = 4;
+  string reason = 5;
+  bool default_action_used = 6;
+}
+
+message CommandRecord {
+  string id = 1;
+  google.protobuf.Timestamp created_at = 2;
+  google.protobuf.Timestamp started_at = 3;
+  google.protobuf.Timestamp finished_at = 4;
+  string source = 5;
+  int64 client_pid = 6;
+  string client_cwd = 7;
+  string host = 8;
+  string remote_user = 9;
+  string command = 10;
+  string display_command = 11;
+  string mode = 12;
+  string risk = 13;
+  string policy_action = 14;
+  string policy_rule = 15;
+  string matched_pattern = 16;
+  string policy_reason = 17;
+  bool default_action = 18;
+  string status = 19;
+  optional int64 remote_exit_code = 20;
+  string ssh_use_error_code = 21;
+  int64 duration_ms = 22;
+  bytes stdout = 23;
+  bytes stderr = 24;
+  bool stdout_truncated = 25;
+  bool stderr_truncated = 26;
+  string error = 27;
+  string approval_status = 28;
+  google.protobuf.Timestamp approved_at = 29;
+  PolicyDecision policy_decision = 30;
+}
+
+message ConnectionStatus {
+  string host = 1;
+  string status = 2;
+  string user = 3;
+  string addr = 4;
+  google.protobuf.Timestamp last_used = 5;
+  google.protobuf.Timestamp connected_at = 6;
+  int64 open_sessions = 7;
+  string last_command = 8;
+}
+
+message PolicyRuleView {
+  string name = 1;
+  string action = 2;
+  string risk = 3;
+  repeated string patterns = 4;
+  int64 matches = 5;
+}
+
+message RuntimeSettings {
+  uint64 generation = 1;
+  string mode = 2;
+  string policy_default_action = 3;
+  bool builtin_rules = 4;
+  string audit_store_output = 5;
+  int64 audit_retention_days = 6;
+  bool redact_secrets = 7;
+  repeated string confirm_risks = 8;
+  string theme = 9;
+  bool focus_pending = 10;
+  bool bell_on_pending = 11;
+}
+
+message Message {
+  uint64 cursor = 1;
+  int64 version = 2;
+  string config_revision = 3;
+  Host host_config = 4;
+  HostPatch host_patch = 5;
+  map<string, Host> hosts = 6;
+  string type = 7;
+  string request_id = 8;
+  bool ok = 9;
+  string id = 10;
+  string host = 11;
+  string command = 12;
+  string source = 13;
+  string cwd = 14;
+  int64 client_pid = 15;
+  bytes data = 16;
+  int64 seq = 17;
+  string status = 18;
+  optional int64 remote_exit_code = 19;
+  string ssh_use_error_code = 20;
+  string error = 21;
+  string decision = 22;
+  bool paused = 23;
+  string mode = 24;
+  string direction = 25;
+  string local_path = 26;
+  string remote_path = 27;
+  int64 size = 28;
+  int64 bytes = 29;
+  uint32 file_mode = 30;
+  bool preserve_mode = 31;
+  bool atomic = 32;
+  string checksum = 33;
+  bool tui_connected = 34;
+  string elapsed = 35;
+  int64 position = 36;
+  CommandRecord record = 37;
+  repeated CommandRecord commands = 38;
+  repeated ConnectionStatus connections = 39;
+  repeated PolicyRuleView policy_rules = 40;
+  uint64 revision = 41;
+  PolicyDecision policy_decision = 42;
+  RuntimeSettings runtime_settings = 43;
+}

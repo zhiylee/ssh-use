@@ -119,3 +119,16 @@ func TestRequestErrorResponse(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRemoteNeverStartsLocalDaemon(t *testing.T) {
+	t.Setenv("SSH_USE_CLIENT_CONFIG", "")
+	t.Setenv("SSH_USE_CONFIG_PATH", t.TempDir()+"/config.yaml")
+	t.Setenv("SSH_USE_SERVER", "127.0.0.1:1")
+	t.Setenv("SSH_USE_TOKEN_FILE", t.TempDir()+"/missing-token")
+	old := startDaemonFn
+	t.Cleanup(func() { startDaemonFn = old })
+	startDaemonFn = func() error { t.Fatal("remote failure spawned local daemon"); return nil }
+	if _, err := Request(context.Background(), protocol.Message{Type: "ping"}); err == nil {
+		t.Fatal("missing token accepted")
+	}
+}

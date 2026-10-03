@@ -28,6 +28,9 @@ func Open(enabled bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A single local writer serializes task and idempotency updates. Multiple
+	// client connections must not cause SQLITE_BUSY errors inside one server.
+	db.SetMaxOpenConns(1)
 	store := &Store{db: db}
 	if err := store.migrate(context.Background()); err != nil {
 		db.Close()
@@ -79,6 +82,10 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 CREATE INDEX IF NOT EXISTS commands_created_at_idx ON commands(created_at DESC);
 CREATE INDEX IF NOT EXISTS commands_status_idx ON commands(status);
+CREATE TABLE IF NOT EXISTS requests (
+  id TEXT PRIMARY KEY,
+  digest TEXT NOT NULL
+);
 `)
 	if err != nil {
 		return err
@@ -170,6 +177,54 @@ ON CONFLICT(id) DO UPDATE SET
 }
 
 func (s *Store) Recent(ctx context.Context, limit int) ([]model.CommandRecord, error) {
+	return s.read(ctx, "", limit)
+}
+
+func (s *Store) Get(ctx context.Context, id string) (*model.CommandRecord, error) {
+	if id == "" {
+		return nil, nil
+	}
+	records, err := s.read(ctx, id, 1)
+	if err != nil || len(records) == 0 {
+		return nil, err
+	}
+	return &records[0], nil
+}
+
+func (s *Store) ClaimRequest(ctx context.Context, id, digest string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, fmt.Errorf("durable request storage is unavailable")
+	}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO requests(id,digest) VALUES (?,?) ON CONFLICT(id) DO NOTHING`, id, digest)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 1 {
+		return true, nil
+	}
+	var previous string
+	if err := s.db.QueryRowContext(ctx, `SELECT digest FROM requests WHERE id=?`, id).Scan(&previous); err != nil {
+		return false, err
+	}
+	if previous != digest {
+		return false, fmt.Errorf("request ID was already used for a different command")
+	}
+	return false, nil
+}
+
+func (s *Store) MarkInterrupted(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE commands SET status='UNKNOWN', ssh_use_error_code='server_restarted', error='Server restarted; remote outcome is unknown. Inspect before retrying.', finished_at=? WHERE status IN ('CREATED','PAUSED','PENDING_APPROVAL','APPROVED','QUEUED','RUNNING')`, formatTime(time.Now()))
+	return err
+}
+
+func (s *Store) read(ctx context.Context, id string, limit int) ([]model.CommandRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
@@ -183,8 +238,9 @@ SELECT id, created_at, started_at, finished_at, source, client_pid, client_cwd,
   remote_exit_code, ssh_use_error_code, duration_ms, stdout, stderr,
   stdout_truncated, stderr_truncated, error, approval_status, approved_at
 FROM commands
+WHERE (? = '' OR id = ?)
 ORDER BY created_at DESC
-LIMIT ?`, limit)
+LIMIT ?`, id, id, limit)
 	if err != nil {
 		return nil, err
 	}
