@@ -30,7 +30,23 @@ func TestRunDispatch(t *testing.T) {
 	origCopy := runCopyFn
 	origTUI := runTUIFn
 	origDaemon := runDaemonFn
-	t.Cleanup(func() { runExecFn = origExec; runCopyFn = origCopy; runTUIFn = origTUI; runDaemonFn = origDaemon })
+	origSkill := runSkillFn
+	t.Cleanup(func() {
+		runExecFn = origExec
+		runCopyFn = origCopy
+		runTUIFn = origTUI
+		runDaemonFn = origDaemon
+		runSkillFn = origSkill
+	})
+	runSkillFn = func(args []string) int {
+		if len(args) != 3 || args[0] != "install" || args[1] != "--agent" || args[2] != "claude" {
+			t.Fatalf("skill args=%#v", args)
+		}
+		return 17
+	}
+	if code := run([]string{"skill", "install", "--agent", "claude"}, &bytes.Buffer{}); code != 17 {
+		t.Fatalf("skill code=%d", code)
+	}
 
 	runExecFn = func(args []string) int {
 		if len(args) != 1 || args[0] != "x" {

@@ -20,6 +20,7 @@ var (
 	runServerFn = cli.RunServer
 	runHostsFn  = cli.RunHosts
 	runJobsFn   = cli.RunJobs
+	runSkillFn  = cli.RunSkill
 )
 
 func main() {
@@ -34,6 +35,8 @@ func run(args []string, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "skill":
+		return runSkillFn(args[1:])
 	case "server":
 		return runServerFn(args[1:])
 	case "hosts", "host":
@@ -68,6 +71,8 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, "  ssh-use tui [--safe]")
 	fmt.Fprintln(w, "  ssh-use hosts <list|get|add|update|delete> [name] [options]")
 	fmt.Fprintln(w, "  ssh-use jobs <list|get> [id]")
+	fmt.Fprintln(w, "  ssh-use skill install --agent <claude|opencode|codex> [--scope user|project] [--force]")
+	fmt.Fprintln(w, "  ssh-use skill install --dir <skills-directory> [--force]")
 	fmt.Fprintln(w, "  ssh-use server init --dir <new-directory> --host <hostname>")
 	fmt.Fprintln(w, "  ssh-use server --dir <directory> [--listen 127.0.0.1:7443]")
 	fmt.Fprintln(w, "  ssh-use server client <add|remove> <name> --dir <directory> [options]")

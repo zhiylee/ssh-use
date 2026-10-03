@@ -1,0 +1,3 @@
+interface:
+  display_name: "SSH Use"
+  short_description: "Run remote commands and transfers through ssh-use"

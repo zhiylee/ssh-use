@@ -1,6 +1,6 @@
 # ssh-use 需求代办列表
 
-更新时间：2026-09-30
+更新时间：2026-10-04
 
 本文档将竞品调研结论转化为可执行需求。现有产品定义和架构约束以 [ssh-use-design.md](./ssh-use-design.md) 为准。
 
@@ -29,7 +29,15 @@
 
 ## P0：Agent Skill
 
-### [ ] P0-01 提供正式 Agent Skill
+### [x] P0-01 提供正式 Agent Skill
+
+实现与验证：
+
+- 正式 Skill 位于 `skills/ssh-use/`，CLI 内置完整 Skill，提供 `ssh-use skill install --agent <claude|opencode|codex>`，支持用户/项目/自定义目录与显式升级。
+- 已验证 Claude Code 和 OpenCode 的实际加载器发现安装后的 Skill；安装过程使用隔离临时目录，不修改已有 Agent 配置。
+- CLI/gateway 集成测试覆盖主机发现、只读执行、敏感命令批准/拒绝、身份隔离、请求去重、上传和下载；真实 SSH/SFTP 测试由连接池集成测试覆盖。
+- 非零结果增加 `remote_exit_code` / `ssh_use_error_code` 来源诊断，退出码语义保持兼容。
+- 真实模型的四类操作行为验收仍需在测试主机运行，未将自动化 CLI 测试当作模型行为验收；步骤见 [Agent Skill 接入说明](docs/agent-skill.md)。
 
 需求：
 
